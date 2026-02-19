@@ -8,7 +8,7 @@ enum AamalTheme {
     static let mint = Color(red: 0.74, green: 0.93, blue: 0.85)
 
     static let backgroundGradient = LinearGradient(
-        colors: [sand, Color.white, mint],
+        colors: [sand, Color.white, mint.opacity(0.75)],
         startPoint: .topLeading,
         endPoint: .bottomTrailing
     )
@@ -27,9 +27,9 @@ struct AamalCardModifier: ViewModifier {
                     .fill(AamalTheme.cardBackground())
                     .overlay(
                         RoundedRectangle(cornerRadius: 16)
-                            .stroke(AamalTheme.gold.opacity(0.25), lineWidth: 1)
+                            .stroke(AamalTheme.gold.opacity(0.18), lineWidth: 1)
                     )
-                    .shadow(color: Color.black.opacity(0.06), radius: 6, x: 0, y: 3)
+                    .shadow(color: Color.black.opacity(0.07), radius: 8, x: 0, y: 4)
             )
     }
 }
@@ -45,7 +45,7 @@ struct AamalSolidCardModifier: ViewModifier {
                         RoundedRectangle(cornerRadius: 18)
                             .stroke(AamalTheme.emerald.opacity(0.12), lineWidth: 1)
                     )
-                    .shadow(color: Color.black.opacity(0.08), radius: 10, x: 0, y: 6)
+                    .shadow(color: Color.black.opacity(0.09), radius: 12, x: 0, y: 6)
             )
     }
 }

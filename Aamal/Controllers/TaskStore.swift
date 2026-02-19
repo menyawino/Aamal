@@ -2,7 +2,80 @@ import Foundation
 import Combine
 import UserNotifications
 
-struct ProgressPoint: Identifiable {
+enum RamadanHabit: String, CaseIterable {
+    case fast
+    case suhoorMealLikeDinner
+    case suhoorPropheticSitting
+    case suhoorIntendWorshipStrength
+    case suhoorNotFull
+    case iftarNotFull
+    case iftarSlightHungerForWorship
+    case iftarIntendWorshipStrength
+    case iftarPropheticSitting
+    case iftarDua
+    case taraweeh
+    case qiyam
+    case quranJuz
+    case sadaqah
+
+    var title: String {
+        switch self {
+        case .fast: return "صيام اليوم"
+        case .suhoorMealLikeDinner: return "أكلت ما كنت تأكل في عشائك العادي"
+        case .suhoorPropheticSitting: return "جلست الجلسة النبوية"
+        case .suhoorIntendWorshipStrength: return "نويت التقوي على العبادة"
+        case .suhoorNotFull: return "لم تشبع"
+        case .iftarNotFull: return "لم تشبع"
+        case .iftarSlightHungerForWorship: return "جوع بسيط يقوي على العبادة"
+        case .iftarIntendWorshipStrength: return "نويت التقوي على العبادة"
+        case .iftarPropheticSitting: return "جلست الجلسة النبوية"
+        case .iftarDua: return "دعاء الافطار"
+        case .taraweeh: return "صلاة التراويح"
+        case .qiyam: return "قيام الليل"
+        case .quranJuz: return "ورد القرآن"
+        case .sadaqah: return "صدقة اليوم"
+        }
+    }
+
+    var section: RamadanHabitSection {
+        switch self {
+        case .suhoorMealLikeDinner, .suhoorPropheticSitting, .suhoorIntendWorshipStrength, .suhoorNotFull:
+            return .suhoor
+        case .iftarNotFull, .iftarSlightHungerForWorship, .iftarIntendWorshipStrength, .iftarPropheticSitting, .iftarDua:
+            return .iftar
+        case .fast, .taraweeh, .qiyam, .quranJuz, .sadaqah:
+            return .general
+        }
+    }
+}
+
+enum RamadanHabitSection {
+    case suhoor
+    case iftar
+    case general
+
+    var title: String {
+        switch self {
+        case .suhoor: return "مهام السحور"
+        case .iftar: return "مهام الإفطار"
+        case .general: return "مهام عامة"
+        }
+    }
+}
+
+struct ProgressPoint: Identifiable, Codable {
+    let id: UUID
+    let date: Date
+    let value: Double
+
+    init(id: UUID = UUID(), date: Date, value: Double) {
+        self.id = id
+        self.date = date
+        self.value = value
+    }
+}
+
+struct RamadanProgressPoint: Identifiable {
     let id = UUID()
     let date: Date
     let value: Double
@@ -16,13 +89,135 @@ final class TaskStore: ObservableObject {
     @Published private(set) var badges: [String] = []
     @Published private(set) var progressHistory: [ProgressPoint] = []
     @Published private(set) var completedLog: [UUID: Set<Date>] = [:]
+    @Published private(set) var tasbihCounts: [String: Int] = [:]
+    @Published private(set) var dailyDuaIndex: Int = 0
+    @Published private(set) var lastResetDate: Date = Date()
+    @Published private(set) var ramadanHabitLog: [String: Set<Date>] = [:]
 
     private let xpPerLevel: Int = 20
     private var lastCompletionDate: Date?
+    private let userDefaults = UserDefaults.standard
+    private let encoder = JSONEncoder()
+    private let decoder = JSONDecoder()
+
+    private enum Keys {
+        static let totalXP = "totalXP"
+        static let level = "level"
+        static let streak = "streak"
+        static let badges = "badges"
+        static let progressHistory = "progressHistory"
+        static let completedLog = "completedLog"
+        static let tasbihCounts = "tasbihCounts"
+        static let dailyDuaIndex = "dailyDuaIndex"
+        static let lastResetDate = "lastResetDate"
+        static let lastCompletionDate = "lastCompletionDate"
+        static let ramadanHabitLog = "ramadanHabitLog"
+    }
 
     init(categories: [TaskCategory] = [dailyCategory, quranTasks, fridayTasks]) {
         self.categories = categories
+        loadData()
+        checkAndResetDaily()
         recordProgressSnapshot(for: Date())
+        requestNotificationPermission()
+    }
+
+    // MARK: - Data Persistence
+
+    private func loadData() {
+        totalXP = userDefaults.integer(forKey: Keys.totalXP)
+        level = userDefaults.integer(forKey: Keys.level)
+        if level == 0 { level = 1 }
+        streak = userDefaults.integer(forKey: Keys.streak)
+        badges = userDefaults.stringArray(forKey: Keys.badges) ?? []
+        dailyDuaIndex = userDefaults.integer(forKey: Keys.dailyDuaIndex)
+
+        if let lastCompletionData = userDefaults.object(forKey: Keys.lastCompletionDate) as? Date {
+            lastCompletionDate = lastCompletionData
+        }
+        if let lastResetData = userDefaults.object(forKey: Keys.lastResetDate) as? Date {
+            lastResetDate = lastResetData
+        }
+
+        if let historyData = userDefaults.data(forKey: Keys.progressHistory),
+           let decoded = try? decoder.decode([ProgressPoint].self, from: historyData) {
+            progressHistory = decoded
+        }
+
+        if let logData = userDefaults.data(forKey: Keys.completedLog),
+           let decoded = try? decoder.decode([String: [Date]].self, from: logData) {
+            var log: [UUID: Set<Date>] = [:]
+            for (key, dates) in decoded {
+                if let uuid = UUID(uuidString: key) {
+                    log[uuid] = Set(dates)
+                }
+            }
+            completedLog = log
+        }
+
+        if let tasbihData = userDefaults.data(forKey: Keys.tasbihCounts),
+           let decoded = try? decoder.decode([String: Int].self, from: tasbihData) {
+            tasbihCounts = decoded
+        }
+
+        if let ramadanData = userDefaults.data(forKey: Keys.ramadanHabitLog),
+           let decoded = try? decoder.decode([String: [Date]].self, from: ramadanData) {
+            var log: [String: Set<Date>] = [:]
+            for (key, dates) in decoded {
+                log[key] = Set(dates)
+            }
+            ramadanHabitLog = log
+        }
+    }
+
+    private func saveData() {
+        userDefaults.set(totalXP, forKey: Keys.totalXP)
+        userDefaults.set(level, forKey: Keys.level)
+        userDefaults.set(streak, forKey: Keys.streak)
+        userDefaults.set(badges, forKey: Keys.badges)
+        userDefaults.set(dailyDuaIndex, forKey: Keys.dailyDuaIndex)
+        userDefaults.set(lastResetDate, forKey: Keys.lastResetDate)
+        userDefaults.set(lastCompletionDate, forKey: Keys.lastCompletionDate)
+
+        if let historyData = try? encoder.encode(progressHistory) {
+            userDefaults.set(historyData, forKey: Keys.progressHistory)
+        }
+
+        var log: [String: [Date]] = [:]
+        for (key, dates) in completedLog {
+            log[key.uuidString] = Array(dates)
+        }
+        if let logData = try? encoder.encode(log) {
+            userDefaults.set(logData, forKey: Keys.completedLog)
+        }
+
+        if let tasbihData = try? encoder.encode(tasbihCounts) {
+            userDefaults.set(tasbihData, forKey: Keys.tasbihCounts)
+        }
+
+        var ramadanLog: [String: [Date]] = [:]
+        for (habit, dates) in ramadanHabitLog {
+            ramadanLog[habit] = Array(dates)
+        }
+        if let ramadanData = try? encoder.encode(ramadanLog) {
+            userDefaults.set(ramadanData, forKey: Keys.ramadanHabitLog)
+        }
+    }
+
+    private func checkAndResetDaily() {
+        let calendar = Calendar.current
+        if !calendar.isDateInToday(lastResetDate) {
+            tasbihCounts = [:]
+            dailyDuaIndex = Int.random(in: 0..<dailyDuas.count)
+            lastResetDate = Date()
+            saveData()
+        }
+    }
+
+    private func requestNotificationPermission() {
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+            print("Notification permission: \(granted)")
+        }
     }
 
     var totalTaskCount: Int {
@@ -45,6 +240,64 @@ final class TaskStore: ObservableObject {
     var xpToNextLevel: Int {
         let currentLevelXP = totalXP % xpPerLevel
         return max(0, xpPerLevel - currentLevelXP)
+    }
+
+    var todayDua: Dua? {
+        guard !dailyDuas.isEmpty else { return nil }
+        let index = min(max(dailyDuaIndex, 0), dailyDuas.count - 1)
+        return dailyDuas[index]
+    }
+
+    var hijriDateText: String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .islamicUmmAlQura)
+        formatter.locale = Locale(identifier: "ar")
+        formatter.dateFormat = "EEEE d MMMM y"
+        return formatter.string(from: Date())
+    }
+
+    var weeklyCompletionRate: Double {
+        completionRate(forLastDays: 7)
+    }
+
+    var monthlyCompletionRate: Double {
+        completionRate(forLastDays: 30)
+    }
+
+    var todayTasbihTotal: Int {
+        tasbihCounts.values.reduce(0, +)
+    }
+
+    var isRamadanNow: Bool {
+        let calendar = Calendar(identifier: .islamicUmmAlQura)
+        return calendar.component(.month, from: Date()) == 9
+    }
+
+    var ramadanDayNumber: Int {
+        let calendar = Calendar(identifier: .islamicUmmAlQura)
+        return calendar.component(.day, from: Date())
+    }
+
+    var ramadanRemainingDaysEstimate: Int {
+        max(0, 30 - ramadanDayNumber)
+    }
+
+    var ramadanTodayProgress: Double {
+        ramadanProgress(on: Date())
+    }
+
+    var ramadanFastingStreak: Int {
+        let calendar = Calendar.current
+        var streak = 0
+        var cursor = calendar.startOfDay(for: Date())
+
+        while isRamadanDay(cursor), isRamadanHabitCompleted(.fast, on: cursor) {
+            streak += 1
+            guard let prev = calendar.date(byAdding: .day, value: -1, to: cursor) else { break }
+            cursor = prev
+        }
+
+        return streak
     }
 
     var allTasks: [Task] {
@@ -93,6 +346,95 @@ final class TaskStore: ObservableObject {
         Array(allTasks.filter { !isTaskCompleted($0, on: date) }.prefix(limit))
     }
 
+    func tasbihCount(for phrase: String) -> Int {
+        tasbihCounts[phrase] ?? 0
+    }
+
+    func incrementTasbih(for phrase: String) {
+        checkAndResetDaily()
+        tasbihCounts[phrase, default: 0] += 1
+        saveData()
+    }
+
+    func resetTasbih(for phrase: String) {
+        tasbihCounts[phrase] = 0
+        saveData()
+    }
+
+    func pickNextDailyDua() {
+        guard !dailyDuas.isEmpty else { return }
+        dailyDuaIndex = (dailyDuaIndex + 1) % dailyDuas.count
+        saveData()
+    }
+
+    func isRamadanHabitCompleted(_ habit: RamadanHabit, on date: Date) -> Bool {
+        let day = dateKey(date)
+        return ramadanHabitLog[habit.rawValue]?.contains(day) ?? false
+    }
+
+    func toggleRamadanHabit(_ habit: RamadanHabit, on date: Date = Date()) {
+        let day = dateKey(date)
+        var entries = ramadanHabitLog[habit.rawValue] ?? []
+        if entries.contains(day) {
+            entries.remove(day)
+        } else {
+            entries.insert(day)
+        }
+        ramadanHabitLog[habit.rawValue] = entries.isEmpty ? nil : entries
+        saveData()
+    }
+
+    func ramadanProgress(on date: Date) -> Double {
+        guard !RamadanHabit.allCases.isEmpty else { return 0 }
+        let done = RamadanHabit.allCases.filter { isRamadanHabitCompleted($0, on: date) }.count
+        return Double(done) / Double(RamadanHabit.allCases.count)
+    }
+
+    func completionSeries(days: Int) -> [ProgressPoint] {
+        guard days > 0 else { return [] }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        return (0..<days).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: -(days - 1 - offset), to: today) else {
+                return nil
+            }
+            return ProgressPoint(date: date, value: completion(for: categories, on: date))
+        }
+    }
+
+    func ramadanSeries(maxDays: Int = 30) -> [RamadanProgressPoint] {
+        guard maxDays > 0 else { return [] }
+
+        let hijri = Calendar(identifier: .islamicUmmAlQura)
+        let gregorian = Calendar.current
+        let today = gregorian.startOfDay(for: Date())
+
+        guard let ramadanStart = hijri.date(from: DateComponents(
+            calendar: hijri,
+            year: hijri.component(.year, from: today),
+            month: 9,
+            day: 1
+        )) else {
+            return []
+        }
+
+        let normalizedStart = gregorian.startOfDay(for: ramadanStart)
+
+        return (0..<maxDays).compactMap { dayIndex in
+            guard let date = gregorian.date(byAdding: .day, value: dayIndex, to: normalizedStart) else {
+                return nil
+            }
+            guard date <= today else { return nil }
+            return RamadanProgressPoint(date: date, value: ramadanProgress(on: date))
+        }
+    }
+
+    func isRamadanDay(_ date: Date) -> Bool {
+        let calendar = Calendar(identifier: .islamicUmmAlQura)
+        return calendar.component(.month, from: date) == 9
+    }
+
     func toggleTask(taskId: UUID, on date: Date = Date()) {
         let dayKey = dateKey(date)
         let isToday = Calendar.current.isDateInToday(dayKey)
@@ -113,6 +455,7 @@ final class TaskStore: ObservableObject {
                             handleCompletionChange(task: task, wasCompleted: wasCompleted)
                         } else {
                             recordProgressSnapshot(for: dayKey)
+                            saveData()
                         }
                         return
                     }
@@ -133,6 +476,7 @@ final class TaskStore: ObservableObject {
                         handleCompletionChange(task: task, wasCompleted: wasCompleted)
                     } else {
                         recordProgressSnapshot(for: dayKey)
+                        saveData()
                     }
                     return
                 }
@@ -161,7 +505,8 @@ final class TaskStore: ObservableObject {
         }
 
         completedLog[taskId] = nil
-        recordProgressSnapshot()
+        recordProgressSnapshot(for: Date())
+        saveData()
     }
 
     func unlogTask(taskId: UUID, on date: Date = Date()) {
@@ -184,8 +529,10 @@ final class TaskStore: ObservableObject {
                             totalXP = max(0, totalXP - task.score)
                             updateLevel()
                             recordProgressSnapshot(for: dayKey)
+                            saveData()
                         } else {
                             recordProgressSnapshot(for: dayKey)
+                            saveData()
                         }
                         return
                     }
@@ -208,8 +555,10 @@ final class TaskStore: ObservableObject {
                         totalXP = max(0, totalXP - task.score)
                         updateLevel()
                         recordProgressSnapshot(for: dayKey)
+                        saveData()
                     } else {
                         recordProgressSnapshot(for: dayKey)
+                        saveData()
                     }
                 }
                 return
@@ -229,6 +578,7 @@ final class TaskStore: ObservableObject {
         }
 
         recordProgressSnapshot(for: Date())
+        saveData()
     }
 
     private func updateLevel() {
@@ -301,6 +651,25 @@ final class TaskStore: ObservableObject {
         if progressHistory.count > 30 {
             progressHistory.removeFirst(progressHistory.count - 30)
         }
+
+        saveData()
+    }
+
+    private func completionRate(forLastDays days: Int) -> Double {
+        guard days > 0 else { return 0 }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        let totalOpportunities = allTasks.count * days
+        guard totalOpportunities > 0 else { return 0 }
+
+        var completed = 0
+        for offset in 0..<days {
+            guard let date = calendar.date(byAdding: .day, value: -offset, to: today) else { continue }
+            completed += allTasks.filter { isTaskCompleted($0, on: date) }.count
+        }
+
+        return Double(completed) / Double(totalOpportunities)
     }
 
     func schedulePrayerNotifications(timings: PrayerTimings) {
@@ -334,6 +703,26 @@ final class TaskStore: ObservableObject {
                     )
                 }
             }
+
+            if self.isRamadanNow {
+                if let suhoorTime = Calendar.current.date(byAdding: .minute, value: -45, to: timings.fajr) {
+                    self.scheduleNotification(
+                        id: "ramadan_suhoor",
+                        title: "تذكير السحور",
+                        body: "تبقى 45 دقيقة على الفجر، لا تنسَ نية الصيام.",
+                        date: suhoorTime
+                    )
+                }
+
+                if let iftarPrep = Calendar.current.date(byAdding: .minute, value: -10, to: timings.maghrib) {
+                    self.scheduleNotification(
+                        id: "ramadan_iftar",
+                        title: "تذكير الإفطار",
+                        body: "اقترب وقت المغرب، جهّز دعاء الإفطار.",
+                        date: iftarPrep
+                    )
+                }
+            }
         }
     }
 
@@ -354,7 +743,8 @@ final class TaskStore: ObservableObject {
 
     private func notificationIdentifiers() -> [String] {
         ["prayer_Fajr", "prayer_Dhuhr", "prayer_Asr", "prayer_Maghrib", "prayer_Isha",
-         "wudu_Fajr", "wudu_Dhuhr", "wudu_Asr", "wudu_Maghrib", "wudu_Isha"]
+            "wudu_Fajr", "wudu_Dhuhr", "wudu_Asr", "wudu_Maghrib", "wudu_Isha",
+            "ramadan_suhoor", "ramadan_iftar"]
     }
 
     private func tasksForCategory(_ category: TaskCategory) -> [Task] {

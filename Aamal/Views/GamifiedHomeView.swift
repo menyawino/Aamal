@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreLocation
+import UIKit
 
 struct GamifiedHomeView: View {
     @ObservedObject var store: TaskStore
@@ -15,9 +16,15 @@ struct GamifiedHomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
+                    HomeBrandHeader()
+
+                    if isRamadan {
+                        RamadanBannerCard(dayText: ramadanDayText)
+                    }
+
                     HeroProgressCard(store: store)
-                    TimeBoundTasksCard(store: store, timings: prayerViewModel.timings)
-                    QuickLogSection(store: store, onlyNonPrayer: true, allowedPrayer: currentPrayerName)
+                    TimeBoundTasksCard(store: store, nextPrayer: nextPrayerSlot)
+                    QuickLogSection(store: store, onlyNonPrayer: true, allowedPrayer: nextPrayerSlot?.arabicName)
 
                     ForEach(store.categories, id: \.name) { category in
                         if category.name == "مهام الجمعة" && !isFriday() {
@@ -44,25 +51,94 @@ struct GamifiedHomeView: View {
         }
     }
 
-    private var currentPrayerName: String? {
+    private var nextPrayerSlot: PrayerSlot? {
         guard let timings = prayerViewModel.timings else { return nil }
         let slots = timings.slots().sorted(by: { $0.date < $1.date })
         let now = Date()
 
-        for index in slots.indices {
-            let current = slots[index]
-            let next = index + 1 < slots.count ? slots[index + 1] : nil
-
-            if now >= current.date && (next == nil || now < next!.date) {
-                return current.arabicName
-            }
+        if let next = slots.first(where: { $0.date > now }) {
+            return next
         }
 
-        return nil
+        guard let first = slots.first,
+              let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: first.date)
+        else {
+            return nil
+        }
+
+        return PrayerSlot(apiKey: "FajrNextDay", arabicName: "الصبح", date: tomorrow)
     }
 
     private func isFriday() -> Bool {
         Calendar.current.component(.weekday, from: Date()) == 6
+    }
+
+    private var isRamadan: Bool {
+        let hijri = Calendar(identifier: .islamicUmmAlQura)
+        return hijri.component(.month, from: Date()) == 9
+    }
+
+    private var ramadanDayText: String {
+        let hijri = Calendar(identifier: .islamicUmmAlQura)
+        let day = hijri.component(.day, from: Date())
+        return "اليوم \(day) من رمضان"
+    }
+}
+
+private struct HomeBrandHeader: View {
+    private var logoImage: UIImage? {
+        UIImage(named: "AppLogo")
+    }
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Aamal")
+                    .font(.headline)
+                    .foregroundColor(AamalTheme.ink)
+                Text("متابعة أعمالك اليومية")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Group {
+                if let logoImage {
+                    Image(uiImage: logoImage)
+                        .resizable()
+                        .scaledToFit()
+                } else {
+                    Image(systemName: "moon.stars.fill")
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundColor(AamalTheme.gold)
+                }
+            }
+            .frame(width: 42, height: 42)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .aamalCard()
+    }
+}
+
+private struct RamadanBannerCard: View {
+    let dayText: String
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("رمضان مبارك")
+                    .font(.headline)
+                    .foregroundColor(AamalTheme.ink)
+                Text(dayText)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+            Image(systemName: "moon.stars.fill")
+                .foregroundColor(AamalTheme.gold)
+                .font(.title2)
+        }
+        .aamalCardSolid()
     }
 }
 
@@ -117,10 +193,19 @@ private struct QuickLogSection: View {
     let onlyNonPrayer: Bool
     let allowedPrayer: String?
 
+    private var isFridayToday: Bool {
+        Calendar.current.component(.weekday, from: Date()) == 6
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("تسجيل سريع")
-                .font(.headline)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("تسجيل سريع")
+                    .font(.headline)
+                Text("أنجز بسرعة أهم المهام المتبقية اليوم")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
 
             let tasks = filteredTasks(limit: 3)
             if tasks.isEmpty {
@@ -137,7 +222,9 @@ private struct QuickLogSection: View {
     }
 
     private func filteredTasks(limit: Int) -> [Task] {
-        let pending = store.allTasks.filter { !store.isTaskCompleted($0, on: Date()) }
+        let pending = store.allTasks.filter {
+            !store.isTaskCompleted($0, on: Date()) && (isFridayToday || $0.category != "وظائف الجمعة")
+        }
 
         if onlyNonPrayer {
             let prayerName = allowedPrayer
@@ -162,6 +249,9 @@ private struct QuickLogRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(task.name)
                     .font(.subheadline)
+                Text(task.category)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
                 Text("+\(task.score) نقطة")
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -178,6 +268,11 @@ private struct QuickLogRow: View {
             .buttonStyle(.borderedProminent)
             .tint(AamalTheme.emerald)
         }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.6))
+        )
     }
 }
 
@@ -235,15 +330,53 @@ private struct TaskCategoryCard: View {
 
 private struct TimeBoundTasksCard: View {
     @ObservedObject var store: TaskStore
-    let timings: PrayerTimings?
+    let nextPrayer: PrayerSlot?
+
+    private var nextPrayerTasks: [Task] {
+        guard let nextPrayer else { return [] }
+        return store.tasks(forPrayerName: nextPrayer.arabicName)
+    }
+
+    private var pendingNextPrayerTasks: [Task] {
+        nextPrayerTasks.filter { !store.isTaskCompleted($0, on: Date()) }
+    }
+
+    private var minutesUntilPrayer: Int? {
+        guard let nextPrayer else { return nil }
+        let distance = Int(Date().distance(to: nextPrayer.date) / 60)
+        return max(0, distance)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("مهام وقت الصلاة")
+            Text("المهام المرتبطة بالصلاة القادمة")
                 .font(.headline)
 
-            if let currentPrayer = currentPrayerName {
-                PrayerTaskGroupCard(prayerName: currentPrayer, tasks: store.tasks(forPrayerName: currentPrayer), store: store)
+            if let nextPrayer {
+                HStack {
+                    Text("الصلاة القادمة: \(nextPrayer.arabicName)")
+                        .font(.subheadline)
+                        .foregroundColor(AamalTheme.ink)
+                    Spacer()
+                    if let minutesUntilPrayer {
+                        Text("بعد \(minutesUntilPrayer) دقيقة")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                PrayerTaskGroupCard(prayerName: nextPrayer.arabicName, tasks: nextPrayerTasks, store: store)
+
+                if !pendingNextPrayerTasks.isEmpty {
+                    Button("سجل المتبقي للصلاة القادمة") {
+                        for task in pendingNextPrayerTasks {
+                            store.toggleTask(taskId: task.id, on: Date())
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(AamalTheme.gold)
+                    .controlSize(.small)
+                }
             } else {
                 Text("لا توجد مهام صلاة حالياً")
                     .font(.subheadline)
@@ -251,23 +384,6 @@ private struct TimeBoundTasksCard: View {
             }
         }
         .aamalCard()
-    }
-
-    private var currentPrayerName: String? {
-        guard let timings else { return nil }
-        let slots = timings.slots().sorted(by: { $0.date < $1.date })
-        let now = Date()
-
-        for index in slots.indices {
-            let current = slots[index]
-            let next = index + 1 < slots.count ? slots[index + 1] : nil
-
-            if now >= current.date && (next == nil || now < next!.date) {
-                return current.arabicName
-            }
-        }
-
-        return nil
     }
 }
 
@@ -436,15 +552,15 @@ private struct TaskRow: View {
             Spacer()
 
             if isCompleted {
-                Button(action: {
-                    store.toggleTask(taskId: task.id, on: Date())
-                }) {
-                    Text("تم")
-                        .font(.subheadline)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 6)
-                }
-                .buttonStyle(BorderedButtonStyle())
+                Text("مكتمل")
+                    .font(.caption)
+                    .foregroundColor(AamalTheme.emerald)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        Capsule()
+                            .fill(AamalTheme.emerald.opacity(0.12))
+                    )
 
                 Button(action: {
                     store.unlogTask(taskId: task.id, on: Date())

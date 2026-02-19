@@ -14,6 +14,7 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
         super.init()
         manager.delegate = self
         manager.desiredAccuracy = kCLLocationAccuracyKilometer
+        manager.distanceFilter = 500
     }
 
     func requestLocation() {
@@ -37,7 +38,9 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        location = locations.last
+        if let latest = locations.last {
+            location = latest
+        }
         errorMessage = nil
         reverseGeocode(location)
     }

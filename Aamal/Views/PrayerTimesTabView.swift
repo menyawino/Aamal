@@ -41,6 +41,11 @@ struct PrayerTimesTabView: View {
 private struct PrayerTimesWidgetCard: View {
     let timings: PrayerTimings?
 
+    private var sortedSlots: [PrayerSlot] {
+        guard let timings else { return [] }
+        return timings.slots().sorted(by: { $0.date < $1.date })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -52,9 +57,12 @@ private struct PrayerTimesWidgetCard: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
+            Text("متابعة الوقت المتبقي لكل صلاة")
+                .font(.caption)
+                .foregroundColor(.secondary)
 
-            if let timings {
-                ForEach(timings.slots()) { slot in
+            if !sortedSlots.isEmpty {
+                ForEach(sortedSlots) { slot in
                     PrayerCountdownRow(slot: slot)
                 }
             } else {
@@ -93,8 +101,11 @@ private struct PrayerCountdownRow: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white)
-                .shadow(color: .black.opacity(0.06), radius: 8, x: 0, y: 4)
+                .fill(Color.white.opacity(0.6))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(AamalTheme.emerald.opacity(0.12), lineWidth: 1)
+                )
         )
     }
 
@@ -116,6 +127,11 @@ private struct PrayerTimesListCard: View {
     @ObservedObject var locationManager: LocationManager
     @ObservedObject var viewModel: PrayerTimesViewModel
 
+    private var sortedSlots: [PrayerSlot] {
+        guard let timings = viewModel.timings else { return [] }
+        return timings.slots().sorted(by: { $0.date < $1.date })
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -128,6 +144,9 @@ private struct PrayerTimesListCard: View {
                         .tint(AamalTheme.gold)
                 }
             }
+            Text("اعتمادًا على موقعك الحالي أو المدينة التي تدخلها")
+                .font(.caption)
+                .foregroundColor(.secondary)
 
             if let placeName = locationManager.placeName {
                 Text(placeName)
@@ -139,8 +158,8 @@ private struct PrayerTimesListCard: View {
                     .foregroundColor(.secondary)
             }
 
-            if let timings = viewModel.timings {
-                ForEach(timings.slots()) { slot in
+            if !sortedSlots.isEmpty {
+                ForEach(sortedSlots) { slot in
                     HStack {
                         Text(slot.arabicName)
                             .font(.subheadline)
@@ -180,6 +199,11 @@ private struct PrayerTimesListCard: View {
                 .buttonStyle(.bordered)
                 .tint(AamalTheme.gold)
             }
+            .padding(10)
+            .background(
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color.white.opacity(0.55))
+            )
 
             Button(action: {
                 locationManager.requestLocation()

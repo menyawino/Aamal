@@ -1,8 +1,44 @@
 import SwiftUI
+import Charts
 import UserNotifications
+
+private enum ChartRange: String, CaseIterable, Identifiable {
+    case week
+    case month
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .week: return "7 أيام"
+        case .month: return "30 يوم"
+        }
+    }
+
+    var days: Int {
+        switch self {
+        case .week: return 7
+        case .month: return 30
+        }
+    }
+}
 
 struct ScoreView: View {
     @ObservedObject var store: TaskStore
+    @State private var selectedRange: ChartRange = .week
+
+    private var chartData: [ProgressPoint] {
+        store.completionSeries(days: selectedRange.days)
+    }
+
+    private var averageValue: Double {
+        guard !chartData.isEmpty else { return 0 }
+        return chartData.map(\.value).reduce(0, +) / Double(chartData.count)
+    }
+
+    private var bestValue: Double {
+        chartData.map(\.value).max() ?? 0
+    }
 
     var body: some View {
         ScrollView {
@@ -14,8 +50,9 @@ struct ScoreView: View {
                     Text("\(store.totalXP) نقطة")
                         .foregroundColor(.secondary)
                 }
+                .aamalCardSolid()
 
-                ProgressGraphCard(points: store.progressHistory)
+                ProgressChartCard(data: chartData, range: selectedRange, selectedRange: $selectedRange)
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text("التقدم نحو المستوى التالي")
@@ -26,6 +63,9 @@ struct ScoreView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
+                .aamalCard()
+
+                AnalyticsCard(store: store, averageValue: averageValue, bestValue: bestValue)
 
                 VStack(spacing: 6) {
                     Text("سلسلة الإنجاز")
@@ -34,6 +74,7 @@ struct ScoreView: View {
                         .font(.title3)
                         .foregroundColor(AamalTheme.emerald)
                 }
+                .aamalCard()
 
                 if !store.badges.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
@@ -49,6 +90,7 @@ struct ScoreView: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .aamalCard()
                 }
 
                 Button(action: scheduleNotification) {
@@ -67,78 +109,143 @@ struct ScoreView: View {
         .navigationTitle("التقدم")
     }
 
+    private func scheduleNotification() {
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+            guard granted else { return }
 
-private struct ProgressGraphCard: View {
-    let points: [ProgressPoint]
+            let content = UNMutableNotificationContent()
+            content.title = "حافظ على سلسلة الإنجاز"
+            content.body = "لا تنسَ إكمال مهامك اليوم."
+            content.sound = .default
 
-    private var lineColor: Color {
-        guard points.count >= 2 else { return AamalTheme.emerald }
-        let last = points[points.count - 1].value
-        let previous = points[points.count - 2].value
-        return last >= previous ? .green : .red
+            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 3600, repeats: true)
+            let request = UNNotificationRequest(identifier: "taskReminder", content: content, trigger: trigger)
+            center.add(request, withCompletionHandler: nil)
+        }
     }
+}
+
+private struct ProgressChartCard: View {
+    let data: [ProgressPoint]
+    let range: ChartRange
+    @Binding var selectedRange: ChartRange
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("منحنى التقدم")
-                .font(.headline)
-
-            GeometryReader { geometry in
-                let values = points.map { $0.value }
-                let maxValue = values.max() ?? 1
-                let minValue = values.min() ?? 0
-                let range = max(maxValue - minValue, 0.001)
-
-                Path { path in
-                    guard points.count > 1 else { return }
-
-                    for index in points.indices {
-                        let x = geometry.size.width * CGFloat(index) / CGFloat(points.count - 1)
-                        let normalized = (points[index].value - minValue) / range
-                        let y = geometry.size.height * (1 - CGFloat(normalized))
-
-                        if index == points.startIndex {
-                            path.move(to: CGPoint(x: x, y: y))
-                        } else {
-                            path.addLine(to: CGPoint(x: x, y: y))
-                        }
+            HStack {
+                Text("منحنى الإنجاز")
+                    .font(.headline)
+                Spacer()
+                Picker("الفترة", selection: $selectedRange) {
+                    ForEach(ChartRange.allCases) { option in
+                        Text(option.title).tag(option)
                     }
                 }
-                .stroke(lineColor, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
-                .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.white.opacity(0.5))
-                )
+                .pickerStyle(.segmented)
+                .frame(maxWidth: 170)
             }
-            .frame(height: 140)
 
-            Text(lineColor == .green ? "اتجاه صاعد" : "اتجاه هابط")
-                .font(.caption)
-                .foregroundColor(lineColor)
+            if data.isEmpty {
+                Text("لا توجد بيانات كافية للرسم البياني")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            } else {
+                Chart(data) { point in
+                    AreaMark(
+                        x: .value("اليوم", point.date),
+                        y: .value("الإنجاز", point.value * 100)
+                    )
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [AamalTheme.emerald.opacity(0.35), AamalTheme.emerald.opacity(0.05)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+
+                    LineMark(
+                        x: .value("اليوم", point.date),
+                        y: .value("الإنجاز", point.value * 100)
+                    )
+                    .foregroundStyle(AamalTheme.emerald)
+                    .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+
+                    PointMark(
+                        x: .value("اليوم", point.date),
+                        y: .value("الإنجاز", point.value * 100)
+                    )
+                    .foregroundStyle(AamalTheme.gold)
+                }
+                .chartYScale(domain: 0...100)
+                .chartYAxis {
+                    AxisMarks(position: .leading)
+                }
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .day, count: range == .week ? 1 : 5)) { _ in
+                        AxisGridLine()
+                        AxisTick()
+                        AxisValueLabel(format: .dateTime.day().month(.abbreviated))
+                    }
+                }
+                .frame(height: 210)
+            }
         }
         .aamalCard()
     }
 }
-    func scheduleNotification() {
-        let center = UNUserNotificationCenter.current()
-        center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, error in
-            if granted {
-                let content = UNMutableNotificationContent()
-                content.title = "حافظ على سلسلة الإنجاز"
-                content.body = "لا تنسَ إكمال مهامك اليوم."
-                content.sound = .default
 
-                let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 3600, repeats: true)
-                let request = UNNotificationRequest(identifier: "taskReminder", content: content, trigger: trigger)
+private struct AnalyticsCard: View {
+    @ObservedObject var store: TaskStore
+    let averageValue: Double
+    let bestValue: Double
 
-                center.add(request) { error in
-                    if let error = error {
-                        print("Error scheduling notification: \(error.localizedDescription)")
-                    }
-                }
-            } else {
-                print("Notifications not granted")
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("تحليلات الإنجاز")
+                .font(.headline)
+
+            HStack {
+                metricView(title: "آخر 7 أيام", value: store.weeklyCompletionRate)
+                metricView(title: "آخر 30 يوم", value: store.monthlyCompletionRate)
+            }
+
+            HStack {
+                metricMini(title: "المتوسط", value: averageValue)
+                metricMini(title: "أفضل يوم", value: bestValue)
             }
         }
+        .aamalCard()
+    }
+
+    private func metricView(title: String, value: Double) -> some View {
+        VStack(spacing: 6) {
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+            Text("\(Int(value * 100))٪")
+                .font(.title3)
+                .foregroundColor(AamalTheme.ink)
+            ProgressView(value: value)
+                .tint(AamalTheme.emerald)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private func metricMini(title: String, value: Double) -> some View {
+        VStack(spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text("\(Int(value * 100))٪")
+                .font(.subheadline)
+                .foregroundColor(AamalTheme.ink)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.white.opacity(0.6))
+        )
     }
 }

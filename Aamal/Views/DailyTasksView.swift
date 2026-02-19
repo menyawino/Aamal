@@ -52,13 +52,17 @@ private struct CategorySectionView: View {
 
             if let subCategories = category.subCategories {
                 ForEach(subCategories, id: \.name) { subCategory in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(subCategory.name)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
+                    if subCategory.tasks.allSatisfy({ store.isPrayerTask($0) }) {
+                        PrayerCompactGroupList(tasks: subCategory.tasks, store: store, date: date)
+                    } else {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(subCategory.name)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
 
-                        ForEach(subCategory.tasks) { task in
-                            TaskRow(task: task, store: store, date: date)
+                            ForEach(subCategory.tasks) { task in
+                                TaskRow(task: task, store: store, date: date)
+                            }
                         }
                     }
                 }
@@ -71,6 +75,76 @@ private struct CategorySectionView: View {
             }
         }
         .aamalCard()
+    }
+}
+
+private struct PrayerCompactGroupList: View {
+    let tasks: [Task]
+    @ObservedObject var store: TaskStore
+    let date: Date
+
+    private var grouped: [String: [Task]] {
+        Dictionary(grouping: tasks, by: { $0.category })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("مهام الصلاة")
+                .font(.subheadline)
+                .foregroundColor(.secondary)
+
+            ForEach(grouped.keys.sorted(), id: \.self) { prayer in
+                PrayerTinyGroupRow(prayerName: prayer, tasks: grouped[prayer] ?? [], store: store, date: date)
+            }
+        }
+    }
+}
+
+private struct PrayerTinyGroupRow: View {
+    let prayerName: String
+    let tasks: [Task]
+    @ObservedObject var store: TaskStore
+    let date: Date
+
+    private var remainingCount: Int {
+        tasks.filter { !store.isTaskCompleted($0, on: date) }.count
+    }
+
+    private var previewTasks: [Task] {
+        Array(tasks.prefix(2))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(prayerName)
+                    .font(.caption)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 4)
+                    .background(AamalTheme.emerald.opacity(0.15))
+                    .foregroundColor(AamalTheme.emerald)
+                    .clipShape(Capsule())
+
+                Text("\(remainingCount) متبقية")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            ForEach(previewTasks) { task in
+                TaskRow(task: task, store: store, date: date)
+            }
+
+            if tasks.count > previewTasks.count {
+                Text("+\(tasks.count - previewTasks.count) مهام أخرى")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.6))
+        )
     }
 }
 

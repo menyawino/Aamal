@@ -27,7 +27,26 @@ struct PrayerSlot: Identifiable, Equatable {
 }
 
 final class PrayerTimesService {
+    enum PrayerTimesError: LocalizedError {
+        case invalidResponse
+        case invalidStatus(code: Int, message: String)
+        case invalidPayload(message: String)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidResponse:
+                return "استجابة غير صالحة من الخادم."
+            case .invalidStatus(let code, let message):
+                return "فشل الطلب (\(code)): \(message)"
+            case .invalidPayload(let message):
+                return "بيانات غير صالحة: \(message)"
+            }
+        }
+    }
+
     private struct Response: Decodable {
+        let code: Int?
+        let status: String?
         struct DataBlock: Decodable {
             struct Timings: Decodable {
                 let Fajr: String
@@ -45,62 +64,83 @@ final class PrayerTimesService {
             let meta: Meta
         }
 
-        let data: DataBlock
+        let data: DataBlock?
     }
 
     func fetchTimings(latitude: Double, longitude: Double, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
-        let urlString = "https://api.aladhan.com/v1/timings?latitude=\(latitude)&longitude=\(longitude)&method=2"
-        guard let url = URL(string: urlString) else {
+        var components = URLComponents(string: "https://api.aladhan.com/v1/timings")
+        components?.queryItems = [
+            URLQueryItem(name: "latitude", value: String(format: "%.6f", latitude)),
+            URLQueryItem(name: "longitude", value: String(format: "%.6f", longitude)),
+            URLQueryItem(name: "method", value: "2")
+        ]
+        guard let url = components?.url else {
             completion(.failure(URLError(.badURL)))
             return
         }
-
-        URLSession.shared.dataTask(with: url) { data, _, error in
-            if let error = error {
-                completion(.failure(error))
-                return
-            }
-
-            guard let data = data else {
-                completion(.failure(URLError(.badServerResponse)))
-                return
-            }
-
-            DispatchQueue.main.async {
-                do {
-                    let response = try JSONDecoder().decode(Response.self, from: data)
-                    let timeZone = TimeZone(identifier: response.data.meta.timezone) ?? .current
-                    let calendar = Calendar.current
-
-                    let fajr = try self.timeFrom(response.data.timings.Fajr, timeZone: timeZone, calendar: calendar)
-                    let dhuhr = try self.timeFrom(response.data.timings.Dhuhr, timeZone: timeZone, calendar: calendar)
-                    let asr = try self.timeFrom(response.data.timings.Asr, timeZone: timeZone, calendar: calendar)
-                    let maghrib = try self.timeFrom(response.data.timings.Maghrib, timeZone: timeZone, calendar: calendar)
-                    let isha = try self.timeFrom(response.data.timings.Isha, timeZone: timeZone, calendar: calendar)
-
-                    completion(.success(PrayerTimings(fajr: fajr, dhuhr: dhuhr, asr: asr, maghrib: maghrib, isha: isha)))
-                } catch {
-                    completion(.failure(error))
-                }
-            }
-        }.resume()
+        print("[PrayerTimesService DEBUG] fetchTimings(latitude:longitude:) URL: \(url.absoluteString) with latitude: \(latitude), longitude: \(longitude)")
+        performRequest(url: url, completion: completion)
     }
 
     func fetchTimings(city: String, country: String, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
-        guard let encodedCity = city.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let encodedCountry = country.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) else {
+        var components = URLComponents(string: "https://api.aladhan.com/v1/timingsByCity")
+        components?.queryItems = [
+            URLQueryItem(name: "city", value: city),
+            URLQueryItem(name: "country", value: country),
+            URLQueryItem(name: "method", value: "2")
+        ]
+        guard let url = components?.url else {
             completion(.failure(URLError(.badURL)))
             return
         }
+        print("[PrayerTimesService DEBUG] fetchTimings(city:country:) URL: \(url.absoluteString) with city: \(city), country: \(country)")
+        performRequest(url: url, completion: completion)
+    }
 
-        let urlString = "https://api.aladhan.com/v1/timingsByCity?city=\(encodedCity)&country=\(encodedCountry)&method=2"
-        guard let url = URL(string: urlString) else {
-            completion(.failure(URLError(.badURL)))
-            return
+    private func performRequest(url: URL, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
+        performRequest(url: url, attempt: 0, completion: completion)
+    }
+
+    private func performRequest(url: URL, attempt: Int, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
+        print("[PrayerTimesService DEBUG] performRequest URL: \(url.absoluteString), attempt: \(attempt)")
+        var request = URLRequest(url: url)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.timeoutInterval = 15
+
+        if attempt == 0 {
+            request.setValue("application/json", forHTTPHeaderField: "Accept")
+            request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+            request.setValue("AmaalApp/1.0", forHTTPHeaderField: "User-Agent")
+        } else {
+            request.setValue("*/*", forHTTPHeaderField: "Accept")
         }
 
-        URLSession.shared.dataTask(with: url) { data, _, error in
+        let session: URLSession
+        if attempt == 0 {
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.waitsForConnectivity = true
+            session = URLSession(configuration: configuration)
+        } else {
+            session = URLSession.shared
+        }
+
+        session.dataTask(with: request) { data, response, error in
             if let error = error {
+                print("[PrayerTimesService DEBUG] URLSession error: \(error)")
+                if let httpResponse = response as? HTTPURLResponse {
+                    print("[PrayerTimesService DEBUG] HTTP Response: \(httpResponse.statusCode)")
+                    print("[PrayerTimesService DEBUG] Headers: \(httpResponse.allHeaderFields)")
+                }
+
+                let nsError = error as NSError
+                if nsError.domain == NSURLErrorDomain,
+                   nsError.code == NSURLErrorCannotParseResponse,
+                   attempt == 0 {
+                    print("[PrayerTimesService DEBUG] retrying with identity encoding")
+                    self.performRequest(url: url, attempt: 1, completion: completion)
+                    return
+                }
+
                 completion(.failure(error))
                 return
             }
@@ -110,17 +150,32 @@ final class PrayerTimesService {
                 return
             }
 
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                completion(.failure(PrayerTimesError.invalidStatus(code: http.statusCode, message: body)))
+                return
+            }
+
             DispatchQueue.main.async {
                 do {
                     let response = try JSONDecoder().decode(Response.self, from: data)
-                    let timeZone = TimeZone(identifier: response.data.meta.timezone) ?? .current
+                    if let code = response.code, code != 200 {
+                        completion(.failure(PrayerTimesError.invalidStatus(code: code, message: response.status ?? "")))
+                        return
+                    }
+                    guard let dataBlock = response.data else {
+                        completion(.failure(PrayerTimesError.invalidPayload(message: response.status ?? "")))
+                        return
+                    }
+
+                    let timeZone = TimeZone(identifier: dataBlock.meta.timezone) ?? .current
                     let calendar = Calendar.current
 
-                    let fajr = try self.timeFrom(response.data.timings.Fajr, timeZone: timeZone, calendar: calendar)
-                    let dhuhr = try self.timeFrom(response.data.timings.Dhuhr, timeZone: timeZone, calendar: calendar)
-                    let asr = try self.timeFrom(response.data.timings.Asr, timeZone: timeZone, calendar: calendar)
-                    let maghrib = try self.timeFrom(response.data.timings.Maghrib, timeZone: timeZone, calendar: calendar)
-                    let isha = try self.timeFrom(response.data.timings.Isha, timeZone: timeZone, calendar: calendar)
+                    let fajr = try self.timeFrom(dataBlock.timings.Fajr, timeZone: timeZone, calendar: calendar)
+                    let dhuhr = try self.timeFrom(dataBlock.timings.Dhuhr, timeZone: timeZone, calendar: calendar)
+                    let asr = try self.timeFrom(dataBlock.timings.Asr, timeZone: timeZone, calendar: calendar)
+                    let maghrib = try self.timeFrom(dataBlock.timings.Maghrib, timeZone: timeZone, calendar: calendar)
+                    let isha = try self.timeFrom(dataBlock.timings.Isha, timeZone: timeZone, calendar: calendar)
 
                     completion(.success(PrayerTimings(fajr: fajr, dhuhr: dhuhr, asr: asr, maghrib: maghrib, isha: isha)))
                 } catch {
@@ -168,12 +223,25 @@ final class PrayerTimesViewModel: ObservableObject {
 
     private let service = PrayerTimesService()
     private let store: TaskStore
+    private var lastLocationKey: String?
+    private var lastRefreshTime: Date?
+    private let minimumRefreshInterval: TimeInterval = 45
 
     init(store: TaskStore) {
         self.store = store
     }
 
     func refresh(latitude: Double, longitude: Double) {
+        let locationKey = String(format: "%.4f,%.4f", latitude, longitude)
+        if let lastKey = lastLocationKey, lastKey == locationKey,
+           let lastTime = lastRefreshTime,
+           Date().timeIntervalSince(lastTime) < minimumRefreshInterval {
+            debugInfo = "تم تجاهل التحديث لتقليل التكرار."
+            return
+        }
+
+        lastLocationKey = locationKey
+        lastRefreshTime = Date()
         isLoading = true
         statusMessage = nil
         debugInfo = "جاري الجلب حسب الإحداثيات: \(String(format: "%.4f", latitude)), \(String(format: "%.4f", longitude))"
@@ -187,10 +255,11 @@ final class PrayerTimesViewModel: ObservableObject {
                     self.store.schedulePrayerNotifications(timings: timings)
                     self.isLoading = false
                     self.debugInfo = "تم التحديث بنجاح عبر الإحداثيات."
-                case .failure:
+                case .failure(let error):
                     self.statusMessage = "تعذر جلب أوقات الصلاة. حاول لاحقًا."
                     self.isLoading = false
-                    self.debugInfo = "فشل الجلب عبر الإحداثيات."
+                    let nsError = error as NSError
+                    self.debugInfo = "فشل الجلب عبر الإحداثيات: \(nsError.domain) (\(nsError.code)) - \(nsError.localizedDescription)"
                 }
             }
         }
@@ -202,6 +271,14 @@ final class PrayerTimesViewModel: ObservableObject {
             statusMessage = "أدخل المدينة والدولة أولاً."
             return
         }
+
+        if let lastTime = lastRefreshTime,
+           Date().timeIntervalSince(lastTime) < minimumRefreshInterval {
+            debugInfo = "تم تجاهل التحديث لتقليل التكرار."
+            return
+        }
+
+        lastRefreshTime = Date()
 
         isLoading = true
         statusMessage = nil
@@ -216,10 +293,11 @@ final class PrayerTimesViewModel: ObservableObject {
                     self.store.schedulePrayerNotifications(timings: timings)
                     self.isLoading = false
                     self.debugInfo = "تم التحديث بنجاح عبر المدينة."
-                case .failure:
+                case .failure(let error):
                     self.statusMessage = "تعذر جلب أوقات الصلاة لهذه المدينة."
                     self.isLoading = false
-                    self.debugInfo = "فشل الجلب عبر المدينة."
+                    let nsError = error as NSError
+                    self.debugInfo = "فشل الجلب عبر المدينة: \(nsError.domain) (\(nsError.code)) - \(nsError.localizedDescription)"
                 }
             }
         }

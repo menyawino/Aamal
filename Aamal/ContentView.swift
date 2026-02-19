@@ -27,6 +27,11 @@ struct ContentView: View {
                     Label("أعمال اليوم", systemImage: "checklist")
                 }
 
+            RamadanView(store: store)
+                .tabItem {
+                    Label("رمضان", systemImage: "moonphase.waxing.crescent")
+                }
+
             ScoreView(store: store)
                 .tabItem {
                     Label("التقدم", systemImage: "chart.bar.fill")

@@ -1,14 +1,33 @@
 import Foundation
+import CryptoKit
 
 /// Defines the `Task` model with properties for name, score, category, and completion status, along with a method to toggle task completion.
 struct Task: Identifiable {
-    let id = UUID()
+    let id: UUID
     var name: String
     var score: Int
     var category: String
     var isCompleted: Bool
     var level: Int
     var badge: String?
+
+    init(
+        id: UUID? = nil,
+        name: String,
+        score: Int,
+        category: String,
+        isCompleted: Bool,
+        level: Int,
+        badge: String?
+    ) {
+        self.id = id ?? Task.stableID(name: name, category: category, score: score)
+        self.name = name
+        self.score = score
+        self.category = category
+        self.isCompleted = isCompleted
+        self.level = level
+        self.badge = badge
+    }
 
     /// Toggles the completion status of the task.
     mutating func toggleCompletion() {
@@ -23,6 +42,19 @@ struct Task: Identifiable {
     /// Assigns a badge to the task.
     mutating func assignBadge(_ badgeName: String) {
         badge = badgeName
+    }
+
+    private static func stableID(name: String, category: String, score: Int) -> UUID {
+        let base = "\(name)|\(category)|\(score)"
+        let digest = SHA256.hash(data: Data(base.utf8))
+        let bytes = Array(digest)
+        let uuidBytes: uuid_t = (
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[8], bytes[9], bytes[10], bytes[11],
+            bytes[12], bytes[13], bytes[14], bytes[15]
+        )
+        return UUID(uuid: uuidBytes)
     }
 }
 
@@ -71,6 +103,7 @@ let dailyCategory = TaskCategory(name: "اليومي", subCategories: [
         Task(name: "حضور دروس العلم (السبت والخميس)", score: 5, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
         Task(name: "مذاكرة دروس العلم", score: 5, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
         Task(name: "بر الوالدين", score: 5, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
+        Task(name: "نية ان تكون هذه النافلة التي يحفظ الله بها بصرك وسمعك وبصرك", score: 1, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
         Task(name: "مذاكرة الدراسة أو إتقان العمل الدنيوي (خمس ساعات)", score: 5, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil)
     ])
 ], tasks: nil)
