@@ -65,7 +65,12 @@ struct ScoreView: View {
                 }
                 .aamalCard()
 
-                AnalyticsCard(store: store, averageValue: averageValue, bestValue: bestValue)
+                AnalyticsCard(
+                    store: store,
+                    averageValue: averageValue,
+                    bestValue: bestValue,
+                    rangeDays: selectedRange.days
+                )
 
                 VStack(spacing: 6) {
                     Text("سلسلة الإنجاز")
@@ -199,6 +204,27 @@ private struct AnalyticsCard: View {
     @ObservedObject var store: TaskStore
     let averageValue: Double
     let bestValue: Double
+    let rangeDays: Int
+
+    private var missedTasks: [TaskMissInsight] {
+        store.mostMissedTasks(days: rangeDays, limit: 4)
+    }
+
+    private var bestCategories: [CategoryCompletionInsight] {
+        store.categoryCompletionInsights(days: rangeDays, limit: 3)
+    }
+
+    private var weakestDay: WeekdayCompletionInsight? {
+        store.weakestWeekdayInsight(days: rangeDays)
+    }
+
+    private var strongestDay: WeekdayCompletionInsight? {
+        store.strongestWeekdayInsight(days: rangeDays)
+    }
+
+    private var consistency: Double {
+        store.consistencyRate(days: rangeDays)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -213,6 +239,72 @@ private struct AnalyticsCard: View {
             HStack {
                 metricMini(title: "المتوسط", value: averageValue)
                 metricMini(title: "أفضل يوم", value: bestValue)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("الثبات خلال الفترة")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                ProgressView(value: consistency)
+                    .tint(AamalTheme.gold)
+                Text("\(Int(consistency * 100))٪ من الأيام حققت فيها 60٪ إنجاز أو أكثر")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+
+            if !bestCategories.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("أقوى التصنيفات")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+
+                    ForEach(bestCategories) { insight in
+                        HStack {
+                            Text(insight.categoryName)
+                                .font(.caption)
+                                .lineLimit(1)
+                            Spacer()
+                            Text("\(Int(insight.completionRate * 100))٪")
+                                .font(.caption)
+                                .foregroundColor(AamalTheme.emerald)
+                        }
+                    }
+                }
+                .padding(.top, 4)
+            }
+
+            if let strongestDay, let weakestDay {
+                HStack {
+                    insightMini(title: "أفضل يوم", detail: strongestDay.localizedName, value: strongestDay.completionRate)
+                    insightMini(title: "أضعف يوم", detail: weakestDay.localizedName, value: weakestDay.completionRate)
+                }
+            }
+
+            if !missedTasks.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("مهام غالبًا تفوتك")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+
+                    ForEach(missedTasks) { insight in
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(insight.taskName)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text("\(Int(insight.completionRate * 100))٪")
+                                    .font(.caption)
+                                    .foregroundColor(AamalTheme.ink)
+                            }
+                            Text("فُوّتت \(insight.missedCount) من \(insight.opportunities)")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+                .padding(.top, 2)
             }
         }
         .aamalCard()
@@ -245,7 +337,27 @@ private struct AnalyticsCard: View {
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color.white.opacity(0.6))
+                .fill(AamalTheme.cardBackground())
+        )
+    }
+
+    private func insightMini(title: String, detail: String, value: Double) -> some View {
+        VStack(spacing: 4) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text(detail)
+                .font(.subheadline)
+                .foregroundColor(AamalTheme.ink)
+            Text("\(Int(value * 100))٪")
+                .font(.caption2)
+                .foregroundColor(AamalTheme.emerald)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(AamalTheme.cardBackground())
         )
     }
 }

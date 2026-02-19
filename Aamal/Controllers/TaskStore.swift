@@ -81,6 +81,39 @@ struct RamadanProgressPoint: Identifiable {
     let value: Double
 }
 
+struct TaskMissInsight: Identifiable {
+    let id: UUID
+    let taskName: String
+    let categoryName: String
+    let completionRate: Double
+    let missedCount: Int
+    let opportunities: Int
+}
+
+struct CategoryCompletionInsight: Identifiable {
+    let id = UUID()
+    let categoryName: String
+    let completionRate: Double
+    let completedCount: Int
+    let opportunities: Int
+}
+
+struct WeekdayCompletionInsight: Identifiable {
+    let id = UUID()
+    let weekday: Int
+    let completionRate: Double
+    let completedCount: Int
+    let opportunities: Int
+
+    var localizedName: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ar")
+        let names = formatter.weekdaySymbols ?? []
+        guard names.indices.contains(weekday - 1) else { return "" }
+        return names[weekday - 1]
+    }
+}
+
 final class TaskStore: ObservableObject {
     @Published var categories: [TaskCategory]
     @Published private(set) var totalXP: Int = 0
@@ -114,7 +147,7 @@ final class TaskStore: ObservableObject {
         static let ramadanHabitLog = "ramadanHabitLog"
     }
 
-    init(categories: [TaskCategory] = [dailyCategory, quranTasks, fridayTasks]) {
+    init(categories: [TaskCategory] = [dailyCategory, quranTasks, fridayTasks, ramadanTasks]) {
         self.categories = categories
         loadData()
         checkAndResetDaily()
@@ -403,6 +436,132 @@ final class TaskStore: ObservableObject {
         }
     }
 
+    func mostMissedTasks(days: Int, limit: Int = 5) -> [TaskMissInsight] {
+        let windowDates = lastNDates(days: days)
+        guard !windowDates.isEmpty else { return [] }
+
+        let insights = allTasks.compactMap { task -> TaskMissInsight? in
+            var opportunities = 0
+            var completed = 0
+
+            for day in windowDates where isTaskActive(task, on: day) {
+                opportunities += 1
+                if isTaskCompleted(task, on: day) {
+                    completed += 1
+                }
+            }
+
+            guard opportunities > 0 else { return nil }
+            let missed = opportunities - completed
+            guard missed > 0 else { return nil }
+
+            return TaskMissInsight(
+                id: task.id,
+                taskName: task.name,
+                categoryName: task.category,
+                completionRate: Double(completed) / Double(opportunities),
+                missedCount: missed,
+                opportunities: opportunities
+            )
+        }
+
+        return insights
+            .sorted {
+                if $0.completionRate == $1.completionRate {
+                    return $0.missedCount > $1.missedCount
+                }
+                return $0.completionRate < $1.completionRate
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    func categoryCompletionInsights(days: Int, limit: Int = 4) -> [CategoryCompletionInsight] {
+        let windowDates = lastNDates(days: days)
+        guard !windowDates.isEmpty else { return [] }
+
+        let groupedTasks = Dictionary(grouping: allTasks, by: \ .category)
+        let insights = groupedTasks.compactMap { entry -> CategoryCompletionInsight? in
+            let tasks = entry.value
+            guard !tasks.isEmpty else { return nil }
+
+            var opportunities = 0
+            var completed = 0
+            for day in windowDates {
+                for task in tasks where isTaskActive(task, on: day) {
+                    opportunities += 1
+                    if isTaskCompleted(task, on: day) {
+                        completed += 1
+                    }
+                }
+            }
+
+            guard opportunities > 0 else { return nil }
+
+            return CategoryCompletionInsight(
+                categoryName: entry.key,
+                completionRate: Double(completed) / Double(opportunities),
+                completedCount: completed,
+                opportunities: opportunities
+            )
+        }
+
+        return insights
+            .sorted {
+                if $0.completionRate == $1.completionRate {
+                    return $0.opportunities > $1.opportunities
+                }
+                return $0.completionRate > $1.completionRate
+            }
+            .prefix(limit)
+            .map { $0 }
+    }
+
+    func weakestWeekdayInsight(days: Int) -> WeekdayCompletionInsight? {
+        weekdayCompletionInsights(days: days).min { $0.completionRate < $1.completionRate }
+    }
+
+    func strongestWeekdayInsight(days: Int) -> WeekdayCompletionInsight? {
+        weekdayCompletionInsights(days: days).max { $0.completionRate < $1.completionRate }
+    }
+
+    func consistencyRate(days: Int, minimumDailyCompletion: Double = 0.6) -> Double {
+        let windowDates = lastNDates(days: days)
+        guard !windowDates.isEmpty else { return 0 }
+
+        let consistentDays = windowDates.filter {
+            completion(for: categories, on: $0) >= minimumDailyCompletion
+        }.count
+
+        return Double(consistentDays) / Double(windowDates.count)
+    }
+
+    private func weekdayCompletionInsights(days: Int) -> [WeekdayCompletionInsight] {
+        let calendar = Calendar.current
+        let windowDates = lastNDates(days: days)
+        guard !windowDates.isEmpty else { return [] }
+
+        var perWeekday: [Int: (completed: Int, opportunities: Int)] = [:]
+        for day in windowDates {
+            let weekday = calendar.component(.weekday, from: day)
+            let tasks = allTasks.filter { isTaskActive($0, on: day) }
+            guard !tasks.isEmpty else { continue }
+            let completed = tasks.filter { isTaskCompleted($0, on: day) }.count
+            let current = perWeekday[weekday] ?? (0, 0)
+            perWeekday[weekday] = (current.completed + completed, current.opportunities + tasks.count)
+        }
+
+        return perWeekday.compactMap { weekday, stats in
+            guard stats.opportunities > 0 else { return nil }
+            return WeekdayCompletionInsight(
+                weekday: weekday,
+                completionRate: Double(stats.completed) / Double(stats.opportunities),
+                completedCount: stats.completed,
+                opportunities: stats.opportunities
+            )
+        }
+    }
+
     func ramadanSeries(maxDays: Int = 30) -> [RamadanProgressPoint] {
         guard maxDays > 0 else { return [] }
 
@@ -670,6 +829,22 @@ final class TaskStore: ObservableObject {
         }
 
         return Double(completed) / Double(totalOpportunities)
+    }
+
+    private func lastNDates(days: Int) -> [Date] {
+        guard days > 0 else { return [] }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        return (0..<days).compactMap { offset in
+            calendar.date(byAdding: .day, value: -offset, to: today)
+        }
+    }
+
+    private func isTaskActive(_ task: Task, on date: Date) -> Bool {
+        if task.category == "وظائف الجمعة" {
+            return Calendar.current.component(.weekday, from: date) == 6
+        }
+        return true
     }
 
     func schedulePrayerNotifications(timings: PrayerTimings) {

@@ -123,3 +123,7 @@ let fridayTasks = TaskCategory(name: "مهام الجمعة", subCategories: nil
     Task(name: "سورة الكهف", score: 1, category: "وظائف الجمعة", isCompleted: false, level: 1, badge: nil),
     Task(name: "الصلاة على النبي 100", score: 1, category: "وظائف الجمعة", isCompleted: false, level: 1, badge: nil)
 ])
+let ramadanTasks = TaskCategory(name: "رمضان", subCategories: nil, tasks: [
+    Task(name: "درس تفسير الشيخ حازم شومان", score: 5, category: "رمضان", isCompleted: false, level: 1, badge: nil)
+])
+

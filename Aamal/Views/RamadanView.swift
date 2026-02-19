@@ -239,7 +239,7 @@ private struct RamadanHabitRow: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.55))
+                .fill(AamalTheme.cardBackground())
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(AamalTheme.gold.opacity(0.12), lineWidth: 1)

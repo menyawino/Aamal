@@ -4,17 +4,27 @@ enum AamalTheme {
     static let emerald = Color(red: 0.10, green: 0.48, blue: 0.36)
     static let gold = Color(red: 0.84, green: 0.70, blue: 0.22)
     static let sand = Color(red: 0.97, green: 0.95, blue: 0.90)
-    static let ink = Color(red: 0.12, green: 0.12, blue: 0.15)
+    static let ink = Color(.label) // Dynamic text color (primary)
     static let mint = Color(red: 0.74, green: 0.93, blue: 0.85)
 
-    static let backgroundGradient = LinearGradient(
-        colors: [sand, Color.white, mint.opacity(0.75)],
-        startPoint: .topLeading,
-        endPoint: .bottomTrailing
-    )
+    static var backgroundGradient: LinearGradient {
+        LinearGradient(
+            colors: [
+                Color(.systemBackground),
+                Color(.secondarySystemBackground),
+                mint.opacity(0.45)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
 
     static func cardBackground() -> some ShapeStyle {
         Color(.systemBackground)
+    }
+
+    static func solidCardBackground() -> some ShapeStyle {
+        Color(.secondarySystemBackground)
     }
 }
 
@@ -40,7 +50,7 @@ struct AamalSolidCardModifier: ViewModifier {
             .padding(16)
             .background(
                 RoundedRectangle(cornerRadius: 18)
-                    .fill(Color.white)
+                    .fill(AamalTheme.solidCardBackground())
                     .overlay(
                         RoundedRectangle(cornerRadius: 18)
                             .stroke(AamalTheme.emerald.opacity(0.12), lineWidth: 1)

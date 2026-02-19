@@ -47,7 +47,12 @@ struct GamifiedHomeView: View {
         }
         .onChange(of: locationManager.location) { _, location in
             guard let location else { return }
-            prayerViewModel.refresh(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
+            prayerViewModel.refresh(
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude,
+                fallbackCity: locationManager.city,
+                fallbackCountry: locationManager.country
+            )
         }
     }
 
@@ -271,7 +276,7 @@ private struct QuickLogRow: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.6))
+                .fill(AamalTheme.cardBackground())
         )
     }
 }
@@ -406,6 +411,7 @@ private struct PrayerTaskGroupCard: View {
     let prayerName: String
     let tasks: [Task]
     @ObservedObject var store: TaskStore
+    @State private var showAllPending = false
 
     private var completion: Double {
         guard !tasks.isEmpty else { return 0 }
@@ -413,8 +419,15 @@ private struct PrayerTaskGroupCard: View {
         return Double(completed) / Double(tasks.count)
     }
 
-    private var upcomingTasks: [Task] {
-        Array(tasks.filter { !store.isTaskCompleted($0, on: Date()) }.prefix(2))
+    private var pendingTasks: [Task] {
+        tasks.filter { !store.isTaskCompleted($0, on: Date()) }
+    }
+
+    private var visibleTasks: [Task] {
+        if showAllPending {
+            return pendingTasks
+        }
+        return Array(pendingTasks.prefix(2))
     }
 
     var body: some View {
@@ -432,12 +445,12 @@ private struct PrayerTaskGroupCard: View {
             ProgressView(value: completion)
                 .tint(AamalTheme.emerald)
 
-            if upcomingTasks.isEmpty {
+            if pendingTasks.isEmpty {
                 Text("كل مهام الصلاة مكتملة")
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
-                ForEach(upcomingTasks) { task in
+                ForEach(visibleTasks) { task in
                     HStack {
                         Text(task.name)
                             .font(.caption)
@@ -451,18 +464,31 @@ private struct PrayerTaskGroupCard: View {
                     }
                 }
 
-                let remaining = tasks.filter { !store.isTaskCompleted($0, on: Date()) }.count - upcomingTasks.count
-                if remaining > 0 {
-                    Text("+\(remaining) مهام أخرى")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
+                if pendingTasks.count > 2 {
+                    Button(showAllPending ? "إخفاء بعض المهام" : "عرض كل المهام المتبقية") {
+                        showAllPending.toggle()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+
+                    if !showAllPending {
+                        let remaining = pendingTasks.count - visibleTasks.count
+                        if remaining > 0 {
+                            Button(action: { showAllPending = true }) {
+                                Text("+\(remaining) مهام أخرى")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
             }
         }
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.6))
+                .fill(AamalTheme.cardBackground())
         )
     }
 }
@@ -526,7 +552,7 @@ private struct CompactTaskList: View {
         .padding(12)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.6))
+                .fill(AamalTheme.cardBackground())
         )
     }
 }

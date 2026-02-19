@@ -33,7 +33,12 @@ struct PrayerTimesTabView: View {
         }
         .onChange(of: locationManager.location) { _, location in
             guard let location else { return }
-            prayerViewModel.refresh(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude)
+            prayerViewModel.refresh(
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude,
+                fallbackCity: locationManager.city,
+                fallbackCountry: locationManager.country
+            )
         }
     }
 }
@@ -101,7 +106,7 @@ private struct PrayerCountdownRow: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.6))
+                .fill(AamalTheme.cardBackground())
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(AamalTheme.emerald.opacity(0.12), lineWidth: 1)
@@ -189,7 +194,7 @@ private struct PrayerTimesListCard: View {
                 }
 
                 Button(action: {
-                    viewModel.refresh(city: viewModel.manualCity, country: viewModel.manualCountry)
+                    viewModel.refresh(city: viewModel.manualCity, country: viewModel.manualCountry, force: true)
                 }) {
                     Text("جلب الأوقات بالمدينة")
                         .font(.subheadline)
@@ -202,7 +207,7 @@ private struct PrayerTimesListCard: View {
             .padding(10)
             .background(
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.white.opacity(0.55))
+                    .fill(AamalTheme.cardBackground())
             )
 
             Button(action: {

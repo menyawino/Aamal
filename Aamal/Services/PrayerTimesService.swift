@@ -68,33 +68,85 @@ final class PrayerTimesService {
     }
 
     func fetchTimings(latitude: Double, longitude: Double, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
+        fetchTimings(latitude: latitude, longitude: longitude, method: 2, completion: completion)
+    }
+
+    func fetchTimingsWithFallback(latitude: Double, longitude: Double, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
+        let methods = [2, 3, 4, 5]
+        fetchTimingsWithMethods(latitude: latitude, longitude: longitude, methods: methods, index: 0, completion: completion)
+    }
+
+    private func fetchTimings(latitude: Double, longitude: Double, method: Int, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
         var components = URLComponents(string: "https://api.aladhan.com/v1/timings")
         components?.queryItems = [
             URLQueryItem(name: "latitude", value: String(format: "%.6f", latitude)),
             URLQueryItem(name: "longitude", value: String(format: "%.6f", longitude)),
-            URLQueryItem(name: "method", value: "2")
+            URLQueryItem(name: "method", value: "\(method)")
         ]
         guard let url = components?.url else {
             completion(.failure(URLError(.badURL)))
             return
         }
-        print("[PrayerTimesService DEBUG] fetchTimings(latitude:longitude:) URL: \(url.absoluteString) with latitude: \(latitude), longitude: \(longitude)")
+        print("[PrayerTimesService DEBUG] fetchTimings(latitude:longitude:) URL: \(url.absoluteString) with latitude: \(latitude), longitude: \(longitude), method: \(method)")
         performRequest(url: url, completion: completion)
     }
 
     func fetchTimings(city: String, country: String, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
+        fetchTimings(city: city, country: country, method: 2, completion: completion)
+    }
+
+    func fetchTimingsByCityWithFallback(city: String, country: String, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
+        let methods = [2, 3, 4, 5]
+        fetchTimingsByCityWithMethods(city: city, country: country, methods: methods, index: 0, completion: completion)
+    }
+
+    private func fetchTimings(city: String, country: String, method: Int, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
         var components = URLComponents(string: "https://api.aladhan.com/v1/timingsByCity")
         components?.queryItems = [
             URLQueryItem(name: "city", value: city),
             URLQueryItem(name: "country", value: country),
-            URLQueryItem(name: "method", value: "2")
+            URLQueryItem(name: "method", value: "\(method)")
         ]
         guard let url = components?.url else {
             completion(.failure(URLError(.badURL)))
             return
         }
-        print("[PrayerTimesService DEBUG] fetchTimings(city:country:) URL: \(url.absoluteString) with city: \(city), country: \(country)")
+        print("[PrayerTimesService DEBUG] fetchTimings(city:country:) URL: \(url.absoluteString) with city: \(city), country: \(country), method: \(method)")
         performRequest(url: url, completion: completion)
+    }
+
+    private func fetchTimingsWithMethods(latitude: Double, longitude: Double, methods: [Int], index: Int, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
+        guard index < methods.count else {
+            completion(.failure(PrayerTimesError.invalidPayload(message: "تعذر جلب أوقات الصلاة بعد عدة محاولات.")))
+            return
+        }
+
+        let method = methods[index]
+        fetchTimings(latitude: latitude, longitude: longitude, method: method) { result in
+            switch result {
+            case .success:
+                completion(result)
+            case .failure:
+                self.fetchTimingsWithMethods(latitude: latitude, longitude: longitude, methods: methods, index: index + 1, completion: completion)
+            }
+        }
+    }
+
+    private func fetchTimingsByCityWithMethods(city: String, country: String, methods: [Int], index: Int, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
+        guard index < methods.count else {
+            completion(.failure(PrayerTimesError.invalidPayload(message: "تعذر جلب أوقات الصلاة حسب المدينة بعد عدة محاولات.")))
+            return
+        }
+
+        let method = methods[index]
+        fetchTimings(city: city, country: country, method: method) { result in
+            switch result {
+            case .success:
+                completion(result)
+            case .failure:
+                self.fetchTimingsByCityWithMethods(city: city, country: country, methods: methods, index: index + 1, completion: completion)
+            }
+        }
     }
 
     private func performRequest(url: URL, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
@@ -223,81 +275,107 @@ final class PrayerTimesViewModel: ObservableObject {
 
     private let service = PrayerTimesService()
     private let store: TaskStore
-    private var lastLocationKey: String?
-    private var lastRefreshTime: Date?
-    private let minimumRefreshInterval: TimeInterval = 45
+    private var lastRequestSignature: String?
+    private var lastRequestTime: Date?
+    private let minimumRefreshInterval: TimeInterval = 12
 
     init(store: TaskStore) {
         self.store = store
     }
 
-    func refresh(latitude: Double, longitude: Double) {
-        let locationKey = String(format: "%.4f,%.4f", latitude, longitude)
-        if let lastKey = lastLocationKey, lastKey == locationKey,
-           let lastTime = lastRefreshTime,
+    private func shouldSkipRequest(signature: String, force: Bool) -> Bool {
+        if force { return false }
+        if let lastSignature = lastRequestSignature,
+           let lastTime = lastRequestTime,
+           lastSignature == signature,
            Date().timeIntervalSince(lastTime) < minimumRefreshInterval {
+            return true
+        }
+        return false
+    }
+
+    private func applySuccessfulFetch(_ timings: PrayerTimings, source: String) {
+        self.timings = timings
+        self.store.schedulePrayerNotifications(timings: timings)
+        self.statusMessage = nil
+        self.isLoading = false
+        self.debugInfo = source
+    }
+
+    func refresh(latitude: Double, longitude: Double, fallbackCity: String? = nil, fallbackCountry: String? = nil, force: Bool = false) {
+        let signature = "coord:\(String(format: "%.4f", latitude)),\(String(format: "%.4f", longitude))"
+        if shouldSkipRequest(signature: signature, force: force) {
             debugInfo = "تم تجاهل التحديث لتقليل التكرار."
             return
         }
 
-        lastLocationKey = locationKey
-        lastRefreshTime = Date()
+        lastRequestSignature = signature
+        lastRequestTime = Date()
         isLoading = true
         statusMessage = nil
         debugInfo = "جاري الجلب حسب الإحداثيات: \(String(format: "%.4f", latitude)), \(String(format: "%.4f", longitude))"
 
-        service.fetchTimings(latitude: latitude, longitude: longitude) { [weak self] result in
+        service.fetchTimingsWithFallback(latitude: latitude, longitude: longitude) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
                 case .success(let timings):
-                    self.timings = timings
-                    self.store.schedulePrayerNotifications(timings: timings)
-                    self.isLoading = false
-                    self.debugInfo = "تم التحديث بنجاح عبر الإحداثيات."
-                case .failure(let error):
-                    self.statusMessage = "تعذر جلب أوقات الصلاة. حاول لاحقًا."
-                    self.isLoading = false
-                    let nsError = error as NSError
-                    self.debugInfo = "فشل الجلب عبر الإحداثيات: \(nsError.domain) (\(nsError.code)) - \(nsError.localizedDescription)"
+                    self.applySuccessfulFetch(timings, source: "تم التحديث بنجاح عبر الإحداثيات.")
+                case .failure:
+                    let city = (fallbackCity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty ? "Cairo" : fallbackCity!.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let country = (fallbackCountry?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty ? "Egypt" : fallbackCountry!.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    self.debugInfo = "فشل الإحداثيات، جارٍ المحاولة عبر المدينة: \(city)، \(country) (افتراضي)"
+
+                    self.service.fetchTimingsByCityWithFallback(city: city, country: country) { [weak self] cityResult in
+                        DispatchQueue.main.async {
+                            guard let self else { return }
+                            switch cityResult {
+                            case .success(let timings):
+                                self.applySuccessfulFetch(timings, source: "تم التحديث عبر المدينة بعد فشل الإحداثيات.")
+                            case .failure(let cityError):
+                                self.statusMessage = "تعذر جلب أوقات الصلاة عبر الموقع والمدينة."
+                                self.isLoading = false
+                                let nsError = cityError as NSError
+                                self.debugInfo = "فشل الجلب عبر المدينة أيضًا: \(nsError.domain) (\(nsError.code)) - \(nsError.localizedDescription)"
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    func refresh(city: String, country: String) {
+    func refresh(city: String, country: String, force: Bool = false) {
         guard !city.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !country.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             statusMessage = "أدخل المدينة والدولة أولاً."
             return
         }
 
-        if let lastTime = lastRefreshTime,
-           Date().timeIntervalSince(lastTime) < minimumRefreshInterval {
+        let signature = "city:\(city.lowercased())|country:\(country.lowercased())"
+        if shouldSkipRequest(signature: signature, force: force) {
             debugInfo = "تم تجاهل التحديث لتقليل التكرار."
             return
         }
 
-        lastRefreshTime = Date()
+        lastRequestSignature = signature
+        lastRequestTime = Date()
 
         isLoading = true
         statusMessage = nil
         debugInfo = "جاري الجلب حسب المدينة: \(city)، \(country)"
 
-        service.fetchTimings(city: city, country: country) { [weak self] result in
+        service.fetchTimingsByCityWithFallback(city: city, country: country) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
                 case .success(let timings):
-                    self.timings = timings
-                    self.store.schedulePrayerNotifications(timings: timings)
-                    self.isLoading = false
-                    self.debugInfo = "تم التحديث بنجاح عبر المدينة."
-                case .failure(let error):
+                    self.applySuccessfulFetch(timings, source: "تم التحديث بنجاح عبر المدينة.")
+                case .failure:
                     self.statusMessage = "تعذر جلب أوقات الصلاة لهذه المدينة."
                     self.isLoading = false
-                    let nsError = error as NSError
-                    self.debugInfo = "فشل الجلب عبر المدينة: \(nsError.domain) (\(nsError.code)) - \(nsError.localizedDescription)"
+                    self.debugInfo = "فشل الجلب عبر المدينة"
                 }
             }
         }

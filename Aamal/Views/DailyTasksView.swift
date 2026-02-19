@@ -105,13 +105,14 @@ private struct PrayerTinyGroupRow: View {
     let tasks: [Task]
     @ObservedObject var store: TaskStore
     let date: Date
+    @State private var isExpanded = false
 
     private var remainingCount: Int {
         tasks.filter { !store.isTaskCompleted($0, on: date) }.count
     }
 
     private var previewTasks: [Task] {
-        Array(tasks.prefix(2))
+        isExpanded ? tasks : Array(tasks.prefix(2))
     }
 
     var body: some View {
@@ -135,15 +136,45 @@ private struct PrayerTinyGroupRow: View {
             }
 
             if tasks.count > previewTasks.count {
-                Text("+\(tasks.count - previewTasks.count) مهام أخرى")
-                    .font(.caption2)
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isExpanded.toggle()
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Text(isExpanded ? "عرض أقل" : "+\(tasks.count - previewTasks.count) مهام أخرى")
+                            .font(.caption2)
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2)
+                    }
                     .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            } else if tasks.count > 2 {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isExpanded.toggle()
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Text("عرض أقل")
+                            .font(.caption2)
+                        Image(systemName: "chevron.up")
+                            .font(.caption2)
+                    }
+                    .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
             }
         }
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.6))
+                .fill(AamalTheme.cardBackground())
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(AamalTheme.gold.opacity(0.12), lineWidth: 1)
+                )
         )
     }
 }

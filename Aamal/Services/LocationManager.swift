@@ -6,6 +6,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
     @Published var errorMessage: String?
     @Published var placeName: String?
+    @Published var city: String?
+    @Published var country: String?
 
     private let manager = CLLocationManager()
     private let geocoder = CLGeocoder()
@@ -61,6 +63,8 @@ final class LocationManager: NSObject, ObservableObject, CLLocationManagerDelega
             let parts = [city, admin, country].compactMap { $0 }
             DispatchQueue.main.async {
                 self?.placeName = parts.isEmpty ? nil : parts.joined(separator: "، ")
+                self?.city = city
+                self?.country = country
             }
         }
     }
