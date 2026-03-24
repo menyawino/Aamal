@@ -12,17 +12,30 @@ struct GamifiedHomeView: View {
         _prayerViewModel = StateObject(wrappedValue: PrayerTimesViewModel(store: store))
     }
 
+    private var completedTodayCount: Int {
+        store.allTasks.filter { store.isTaskCompleted($0, on: Date()) }.count
+    }
+
+    private var pendingTodayCount: Int {
+        max(0, store.totalTaskCount - completedTodayCount)
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    HomeBrandHeader()
-
-                    if isRamadan {
-                        RamadanBannerCard(dayText: ramadanDayText)
-                    }
+                    // HomeBrandHeader removed per request
 
                     HeroProgressCard(store: store)
+                    HomeTodayStatusCard(
+                        completedCount: completedTodayCount,
+                        pendingCount: pendingTodayCount,
+                        nextPrayerName: nextPrayerSlot?.arabicName
+                    )
+                    HomeQuickActionsCard(
+                        refreshAction: { refreshPrayerTimes(force: true) },
+                        quickLogAction: { quickLogTopTasks(limit: 3) }
+                    )
                     TimeBoundTasksCard(store: store, nextPrayer: nextPrayerSlot)
                     QuickLogSection(store: store, onlyNonPrayer: true, allowedPrayer: nextPrayerSlot?.arabicName)
 
@@ -39,6 +52,17 @@ struct GamifiedHomeView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 24)
             }
+            .refreshable {
+                refreshPrayerTimes(force: true)
+            }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { refreshPrayerTimes(force: true) }) {
+                        Image(systemName: "arrow.clockwise")
+                    }
+                    .accessibilityLabel("تحديث")
+                }
+            }
             .background(AamalTheme.backgroundGradient.ignoresSafeArea())
             .navigationTitle("أعمال")
         }
@@ -53,6 +77,27 @@ struct GamifiedHomeView: View {
                 fallbackCity: locationManager.city,
                 fallbackCountry: locationManager.country
             )
+        }
+    }
+
+    private func refreshPrayerTimes(force: Bool) {
+        locationManager.requestLocation()
+        guard let location = locationManager.location else { return }
+        prayerViewModel.refresh(
+            latitude: location.coordinate.latitude,
+            longitude: location.coordinate.longitude,
+            fallbackCity: locationManager.city,
+            fallbackCountry: locationManager.country,
+            force: force
+        )
+    }
+
+    private func quickLogTopTasks(limit: Int) {
+        let pendingTasks = store.allTasks.filter {
+            !store.isTaskCompleted($0, on: Date()) && (isFriday() || $0.category != "وظائف الجمعة")
+        }
+        for task in pendingTasks.prefix(limit) {
+            store.toggleTask(taskId: task.id, on: Date())
         }
     }
 
@@ -78,74 +123,63 @@ struct GamifiedHomeView: View {
         Calendar.current.component(.weekday, from: Date()) == 6
     }
 
-    private var isRamadan: Bool {
-        let hijri = Calendar(identifier: .islamicUmmAlQura)
-        return hijri.component(.month, from: Date()) == 9
-    }
-
-    private var ramadanDayText: String {
-        let hijri = Calendar(identifier: .islamicUmmAlQura)
-        let day = hijri.component(.day, from: Date())
-        return "اليوم \(day) من رمضان"
-    }
 }
 
-private struct HomeBrandHeader: View {
-    private var logoImage: UIImage? {
-        UIImage(named: "AppLogo")
-    }
+private struct HomeTodayStatusCard: View {
+    let completedCount: Int
+    let pendingCount: Int
+    let nextPrayerName: String?
 
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Aamal")
+                Text("ملخص سريع")
                     .font(.headline)
-                    .foregroundColor(AamalTheme.ink)
-                Text("متابعة أعمالك اليومية")
-                    .font(.caption)
+                Text("المتبقي اليوم: \(pendingCount)")
+                    .font(.subheadline)
                     .foregroundColor(.secondary)
             }
             Spacer()
-            Group {
-                if let logoImage {
-                    Image(uiImage: logoImage)
-                        .resizable()
-                        .scaledToFit()
-                } else {
-                    Image(systemName: "moon.stars.fill")
-                        .resizable()
-                        .scaledToFit()
-                        .foregroundColor(AamalTheme.gold)
+            VStack(alignment: .trailing, spacing: 4) {
+                Text("المكتمل: \(completedCount)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                if let nextPrayerName {
+                    Text("الصلاة القادمة: \(nextPrayerName)")
+                        .font(.caption)
+                        .foregroundColor(AamalTheme.emerald)
                 }
             }
-            .frame(width: 42, height: 42)
-            .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .aamalCard()
     }
 }
 
-private struct RamadanBannerCard: View {
-    let dayText: String
+private struct HomeQuickActionsCard: View {
+    let refreshAction: () -> Void
+    let quickLogAction: () -> Void
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("رمضان مبارك")
-                    .font(.headline)
-                    .foregroundColor(AamalTheme.ink)
-                Text(dayText)
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+        HStack(spacing: 8) {
+            Button(action: quickLogAction) {
+                Label("تسجيل 3 مهام", systemImage: "checklist")
+                    .frame(maxWidth: .infinity)
             }
-            Spacer()
-            Image(systemName: "moon.stars.fill")
-                .foregroundColor(AamalTheme.gold)
-                .font(.title2)
+            .buttonStyle(.borderedProminent)
+            .tint(AamalTheme.emerald)
+
+            Button(action: refreshAction) {
+                Label("تحديث الأوقات", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .tint(AamalTheme.gold)
         }
-        .aamalCardSolid()
+        .controlSize(.small)
     }
 }
+
+
 
 private struct HeroProgressCard: View {
     @ObservedObject var store: TaskStore
@@ -285,6 +319,10 @@ private struct TaskCategoryCard: View {
     let category: TaskCategory
     @ObservedObject var store: TaskStore
 
+    private var nonPrayerSubCategories: [SubCategory] {
+        category.subCategories?.filter { !$0.tasks.allSatisfy(store.isPrayerTask) } ?? []
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
@@ -302,9 +340,8 @@ private struct TaskCategoryCard: View {
             if category.name == "اليومي" {
                 PrayerTaskSummaryList(store: store)
 
-                if let subCategories = category.subCategories,
-                   let azkar = subCategories.first(where: { $0.name == "الاذكار المقيدة" }) {
-                    CompactTaskList(title: azkar.name, tasks: azkar.tasks, store: store)
+                ForEach(nonPrayerSubCategories, id: \.name) { subCategory in
+                    CompactTaskList(title: subCategory.name, tasks: subCategory.tasks, store: store)
                 }
             } else {
                 if let subCategories = category.subCategories {

@@ -3,6 +3,79 @@ import SwiftUI
 struct DailyTasksView: View {
     @ObservedObject var store: TaskStore
     @State private var selectedDate = Date()
+    @State private var showAddTaskSheet = false
+    @State private var newTaskName: String = ""
+    @State private var newTaskScore: Int = 1
+    @State private var selectedCategoryName: String = ""
+    @State private var customCategoryName: String = ""
+    @State private var searchText: String = ""
+
+    private var isSelectedDateToday: Bool {
+        Calendar.current.isDateInToday(selectedDate)
+    }
+
+    private var baseCategories: [TaskCategory] {
+        store.categories.filter { !($0.name == "مهام الجمعة" && !isFriday(selectedDate)) }
+    }
+
+    private var filteredCategories: [TaskCategory] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return baseCategories }
+
+        return baseCategories.compactMap { category in
+            if category.name.localizedCaseInsensitiveContains(query) {
+                return category
+            }
+
+            let filteredSubCategories = category.subCategories?.compactMap { subCategory in
+                let tasks = subCategory.tasks.filter { $0.name.localizedCaseInsensitiveContains(query) }
+                return tasks.isEmpty ? nil : SubCategory(name: subCategory.name, tasks: tasks)
+            }
+
+            let filteredTasks = category.tasks?.filter { $0.name.localizedCaseInsensitiveContains(query) }
+
+            let hasSubCategories = !(filteredSubCategories?.isEmpty ?? true)
+            let hasTasks = !(filteredTasks?.isEmpty ?? true)
+
+            guard hasSubCategories || hasTasks else { return nil }
+            return TaskCategory(
+                name: category.name,
+                subCategories: hasSubCategories ? filteredSubCategories : nil,
+                tasks: hasTasks ? filteredTasks : nil
+            )
+        }
+    }
+
+    private var selectedDateTotalTasks: Int {
+        baseCategories.reduce(0) { partial, category in
+            partial + tasksForCategory(category).count
+        }
+    }
+
+    private var selectedDateCompletedTasks: Int {
+        baseCategories.flatMap(tasksForCategory).filter { store.isTaskCompleted($0, on: selectedDate) }.count
+    }
+
+    private var selectedDateCompletion: Double {
+        guard selectedDateTotalTasks > 0 else { return 0 }
+        return Double(selectedDateCompletedTasks) / Double(selectedDateTotalTasks)
+    }
+
+    private var normalizedTaskName: String {
+        newTaskName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var normalizedCustomCategory: String {
+        customCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSaveNewTask: Bool {
+        guard !normalizedTaskName.isEmpty else { return false }
+        if selectedCategoryName == "مخصص" {
+            return !normalizedCustomCategory.isEmpty
+        }
+        return true
+    }
 
     var body: some View {
         NavigationStack {
@@ -16,13 +89,44 @@ struct DailyTasksView: View {
                         Text("يمكنك تسجيل إنجازات أي يوم سابق هنا")
                             .font(.caption)
                             .foregroundColor(.secondary)
+
+                        if !isSelectedDateToday {
+                            Button("العودة لليوم") {
+                                selectedDate = Date()
+                            }
+                            .buttonStyle(.bordered)
+                        }
                     }
                     .aamalCard()
 
-                    ForEach(store.categories, id: \.name) { category in
-                        if category.name == "مهام الجمعة" && !isFriday(selectedDate) {
-                            EmptyView()
-                        } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Text("ملخص اليوم المختار")
+                                .font(.headline)
+                            Spacer()
+                            Text("\(selectedDateCompletedTasks)/\(selectedDateTotalTasks)")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+
+                        ProgressView(value: selectedDateCompletion)
+                            .tint(AamalTheme.emerald)
+
+                        Text("\(Int(selectedDateCompletion * 100))% مكتمل")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .aamalCard()
+
+                    if filteredCategories.isEmpty {
+                        Text("لا توجد مهام مطابقة لبحثك")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.vertical, 24)
+                            .aamalCard()
+                    } else {
+                        ForEach(filteredCategories, id: \.name) { category in
                             CategorySectionView(category: category, store: store, date: selectedDate)
                         }
                     }
@@ -30,13 +134,104 @@ struct DailyTasksView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 24)
             }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showAddTaskSheet = true }) {
+                        Image(systemName: "plus")
+                    }
+                }
+            }
             .background(AamalTheme.backgroundGradient.ignoresSafeArea())
             .navigationTitle("أعمال اليوم")
+            .searchable(text: $searchText, prompt: "ابحث عن مهمة")
+            .sheet(isPresented: $showAddTaskSheet) {
+                NavigationStack {
+                    Form {
+                        Section(header: Text("تفاصيل المهمة")) {
+                            TextField("اسم المهمة", text: $newTaskName)
+                            Stepper(value: $newTaskScore, in: 1...20) {
+                                Text("الدرجة: \(newTaskScore)")
+                            }
+                        }
+
+                        Section(header: Text("التصنيف")) {
+                            Picker("اختر تصنيفا", selection: $selectedCategoryName) {
+                                ForEach(store.categories.map { $0.name }, id: \.self) { name in
+                                    Text(name).tag(name)
+                                }
+                                Text("مخصص").tag("مخصص")
+                            }
+
+                            if selectedCategoryName == "مخصص" {
+                                TextField("اسم التصنيف المخصص", text: $customCategoryName)
+                            }
+                        }
+
+                        Section {
+                            Text("سيتم حفظ المهمة مباشرة وإظهارها ضمن التصنيف المختار.")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .navigationTitle("إضافة مهمة")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("حفظ") {
+                                saveNewTask()
+                            }
+                            .disabled(!canSaveNewTask)
+                        }
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("إلغاء") {
+                                resetAddTaskForm()
+                                showAddTaskSheet = false
+                            }
+                        }
+                    }
+                    .onAppear {
+                        if selectedCategoryName.isEmpty {
+                            selectedCategoryName = store.categories.first?.name ?? "عام"
+                        }
+                    }
+                }
+            }
         }
+    }
+
+    private func tasksForCategory(_ category: TaskCategory) -> [Task] {
+        var tasks: [Task] = []
+        if let subCategories = category.subCategories {
+            for subCategory in subCategories {
+                tasks.append(contentsOf: subCategory.tasks)
+            }
+        }
+        if let directTasks = category.tasks {
+            tasks.append(contentsOf: directTasks)
+        }
+        return tasks
     }
 
     private func isFriday(_ date: Date) -> Bool {
         Calendar.current.component(.weekday, from: date) == 6
+    }
+
+    private func saveNewTask() {
+        var categoryToUse = selectedCategoryName
+        if categoryToUse == "مخصص" {
+            categoryToUse = normalizedCustomCategory
+        }
+
+        store.addTask(name: normalizedTaskName, score: newTaskScore, categoryName: categoryToUse)
+        resetAddTaskForm()
+        showAddTaskSheet = false
+    }
+
+    private func resetAddTaskForm() {
+        newTaskName = ""
+        newTaskScore = 1
+        selectedCategoryName = store.categories.first?.name ?? ""
+        customCategoryName = ""
     }
 }
 

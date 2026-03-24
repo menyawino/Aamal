@@ -17,19 +17,9 @@ struct ContentView: View {
                     Label("الرئيسية", systemImage: "sparkles")
                 }
 
-            PrayerTimesTabView(store: store)
-                .tabItem {
-                    Label("أوقات الصلاة", systemImage: "moon.stars.fill")
-                }
-
             DailyTasksView(store: store)
                 .tabItem {
                     Label("أعمال اليوم", systemImage: "checklist")
-                }
-
-            RamadanView(store: store)
-                .tabItem {
-                    Label("رمضان", systemImage: "moonphase.waxing.crescent")
                 }
 
             ScoreView(store: store)

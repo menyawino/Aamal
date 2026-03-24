@@ -2,29 +2,11 @@ import SwiftUI
 import UserNotifications
 
 struct TaskListView: View {
-    @State private var tasks: [Task] = [
-        Task(name: "الاستيقاظ", score: 1, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "الخلاء", score: 1, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "لبس الثوب وخلعه", score: 1, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "الوضوء", score: 1, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "دخول المنزل والخروج", score: 1, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "المسجد (دخول وخروج)", score: 1, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "المشي إلى المسجد", score: 1, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "الأكل والشرب", score: 1, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "الركوب", score: 1, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "النوم", score: 1, category: "الاذكار المقيدة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "حضور دروس العلم (السبت والخميس)", score: 5, category: "علم", isCompleted: false, level: 1, badge: nil),
-        Task(name: "مذاكرة دروس العلم", score: 5, category: "علم", isCompleted: false, level: 1, badge: nil),
-        Task(name: "بر الوالدين", score: 5, category: "الأسرة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "مذاكرة الدراسة أو إتقان العمل الدنيوي (خمس ساعات)", score: 5, category: "عمل", isCompleted: false, level: 1, badge: nil),
-        Task(name: "سنن الفطرة", score: 1, category: "مهام الجمعة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "الغسل", score: 1, category: "مهام الجمعة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "الطيب", score: 1, category: "مهام الجمعة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "السواك", score: 1, category: "مهام الجمعة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "التبكير", score: 1, category: "مهام الجمعة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "سورة الكهف", score: 1, category: "مهام الجمعة", isCompleted: false, level: 1, badge: nil),
-        Task(name: "الصلاة على النبي 100", score: 1, category: "مهام الجمعة", isCompleted: false, level: 1, badge: nil)
-    ]
+    @State private var tasks: [Task] = TaskListView.seededTasks
+
+    private static var seededTasks: [Task] {
+        dailyCategory.subCategories?.flatMap(\.tasks) ?? []
+    }
 
     var body: some View {
         NavigationView {
@@ -80,7 +62,7 @@ struct TaskListView: View {
 }
 
 struct TaskTableView: View {
-    let taskCategories: [TaskCategory] = [dailyCategory, quranTasks, fridayTasks]
+    let taskCategories: [TaskCategory] = [dailyCategory, fridayTasks]
     @State private var currentDate = Date()
     @State private var currentTime = ""
 
@@ -168,7 +150,7 @@ struct TaskTableView: View {
     private func isFriday() -> Bool {
         let calendar = Calendar.current
         let weekday = calendar.component(.weekday, from: currentDate)
-        return weekday == 6 // Friday is the 6th day in the Gregorian calendar
+        return weekday == 6
     }
 
     private func fetchCurrentTime() -> String {

@@ -67,13 +67,42 @@ final class PrayerTimesService {
         let data: DataBlock?
     }
 
+    private let egyptianSurveyPrayerTimesURL = URL(string: "https://www.esa.gov.eg/praytimes.aspx")!
+
+    func fetchTimingsFromEgyptianSurvey(governorate: String, date: Date = Date(), completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
+        let request = URLRequest(url: egyptianSurveyPrayerTimesURL)
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                completion(.failure(error))
+                return
+            }
+
+            if let http = response as? HTTPURLResponse, http.statusCode != 200 {
+                completion(.failure(PrayerTimesError.invalidStatus(code: http.statusCode, message: "ESA praytimes page failed")))
+                return
+            }
+
+            guard let data else {
+                completion(.failure(URLError(.badServerResponse)))
+                return
+            }
+
+            do {
+                let html = self.decodeHTML(data)
+                let timings = try self.parseESAPrayerTimes(html: html, governorate: governorate, date: date)
+                completion(.success(timings))
+            } catch {
+                completion(.failure(error))
+            }
+        }.resume()
+    }
+
     func fetchTimings(latitude: Double, longitude: Double, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
-        fetchTimings(latitude: latitude, longitude: longitude, method: 2, completion: completion)
+        fetchTimingsFromEgyptianSurvey(governorate: "القاهرة", completion: completion)
     }
 
     func fetchTimingsWithFallback(latitude: Double, longitude: Double, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
-        let methods = [2, 3, 4, 5]
-        fetchTimingsWithMethods(latitude: latitude, longitude: longitude, methods: methods, index: 0, completion: completion)
+        fetchTimingsFromEgyptianSurvey(governorate: "القاهرة", completion: completion)
     }
 
     private func fetchTimings(latitude: Double, longitude: Double, method: Int, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
@@ -92,12 +121,182 @@ final class PrayerTimesService {
     }
 
     func fetchTimings(city: String, country: String, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
-        fetchTimings(city: city, country: country, method: 2, completion: completion)
+        fetchTimingsFromEgyptianSurvey(governorate: city, completion: completion)
     }
 
     func fetchTimingsByCityWithFallback(city: String, country: String, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
-        let methods = [2, 3, 4, 5]
-        fetchTimingsByCityWithMethods(city: city, country: country, methods: methods, index: 0, completion: completion)
+        fetchTimingsFromEgyptianSurvey(governorate: city) { [weak self] result in
+            switch result {
+            case .success:
+                completion(result)
+            case .failure:
+                self?.fetchTimingsFromEgyptianSurvey(governorate: "القاهرة", completion: completion)
+            }
+        }
+    }
+
+    private func decodeHTML(_ data: Data) -> String {
+        if let text = String(data: data, encoding: .utf8) {
+            return text
+        }
+        if let text = String(data: data, encoding: .isoLatin1) {
+            return text
+        }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private func parseESAPrayerTimes(html: String, governorate: String, date: Date) throws -> PrayerTimings {
+        guard let tableHTML = firstMatch(in: html, pattern: #"<table[^>]*id=\"placeholder1_GridView1\"[^>]*>(.*?)</table>"#, options: [.dotMatchesLineSeparators, .caseInsensitive]) else {
+            throw PrayerTimesError.invalidPayload(message: "تعذر العثور على جدول مواقيت الصلاة في موقع الهيئة.")
+        }
+
+        let rows = matches(in: tableHTML, pattern: #"<tr[^>]*>(.*?)</tr>"#, options: [.dotMatchesLineSeparators, .caseInsensitive])
+        let targetDate = isoDateString(from: date)
+        let targetGovernorate = normalizeGovernorateName(governorate)
+
+        var fallbackRow: [String]?
+
+        for row in rows {
+            let columns = matches(in: row, pattern: #"<td[^>]*>(.*?)</td>"#, options: [.dotMatchesLineSeparators, .caseInsensitive])
+                .map(cleanHTMLCell)
+
+            guard columns.count >= 9 else { continue }
+
+            let city = normalizeGovernorateName(columns[0])
+            let rowDate = columns[1].trimmingCharacters(in: .whitespacesAndNewlines)
+
+            if city == targetGovernorate || city.contains(targetGovernorate) || targetGovernorate.contains(city) {
+                if rowDate == targetDate {
+                    return try buildPrayerTimings(from: columns, fallbackDate: date)
+                }
+                if fallbackRow == nil {
+                    fallbackRow = columns
+                }
+            }
+        }
+
+        if let fallbackRow {
+            return try buildPrayerTimings(from: fallbackRow, fallbackDate: date)
+        }
+
+        throw PrayerTimesError.invalidPayload(message: "تعذر العثور على مواقيت الصلاة للمحافظة المحددة: \(governorate)")
+    }
+
+    private func buildPrayerTimings(from columns: [String], fallbackDate: Date) throws -> PrayerTimings {
+        let parsedDate = dateFromISO(columns[1]) ?? fallbackDate
+        let fajr = try parseESATime(columns[3], on: parsedDate)
+        let dhuhr = try parseESATime(columns[5], on: parsedDate)
+        let asr = try parseESATime(columns[6], on: parsedDate)
+        let maghrib = try parseESATime(columns[7], on: parsedDate)
+        let isha = try parseESATime(columns[8], on: parsedDate)
+
+        return PrayerTimings(fajr: fajr, dhuhr: dhuhr, asr: asr, maghrib: maghrib, isha: isha)
+    }
+
+    private func parseESATime(_ value: String, on date: Date) throws -> Date {
+        let normalized = value
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let isPM = normalized.contains("م")
+        let isAM = normalized.contains("ص")
+        let timePart = normalized.replacingOccurrences(of: "ص", with: "")
+            .replacingOccurrences(of: "م", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let components = timePart.split(separator: ":").map(String.init)
+        guard components.count == 2,
+              let hourRaw = Int(components[0].trimmingCharacters(in: .whitespacesAndNewlines)),
+              let minute = Int(components[1].trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            throw PrayerTimesError.invalidPayload(message: "تعذر قراءة الوقت: \(value)")
+        }
+
+        var hour = hourRaw
+        if isPM && hour < 12 { hour += 12 }
+        if isAM && hour == 12 { hour = 0 }
+
+        var cairoCalendar = Calendar.current
+        cairoCalendar.timeZone = TimeZone(identifier: "Africa/Cairo") ?? .current
+        var dayComponents = cairoCalendar.dateComponents([.year, .month, .day], from: date)
+        dayComponents.hour = hour
+        dayComponents.minute = minute
+        dayComponents.second = 0
+
+        guard let parsed = cairoCalendar.date(from: dayComponents) else {
+            throw PrayerTimesError.invalidPayload(message: "تعذر بناء تاريخ الوقت: \(value)")
+        }
+
+        return parsed
+    }
+
+    private func dateFromISO(_ value: String) -> Date? {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Africa/Cairo") ?? .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.date(from: value.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    private func isoDateString(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "Africa/Cairo") ?? .current
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private func cleanHTMLCell(_ raw: String) -> String {
+        let stripped = raw.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+        return stripped
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&#160;", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func normalizeGovernorateName(_ value: String) -> String {
+        value
+            .folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "ar"))
+            .replacingOccurrences(of: "ـ", with: "")
+            .replacingOccurrences(of: "أ", with: "ا")
+            .replacingOccurrences(of: "إ", with: "ا")
+            .replacingOccurrences(of: "آ", with: "ا")
+            .replacingOccurrences(of: "ة", with: "ه")
+            .replacingOccurrences(of: "ى", with: "ي")
+            .replacingOccurrences(of: "\u{00A0}", with: " ")
+                .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func firstMatch(in text: String, pattern: String, options: NSRegularExpression.Options = []) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options),
+              let range = Range(NSRange(location: 0, length: text.utf16.count), in: text),
+              let match = regex.firstMatch(in: text, options: [], range: NSRange(range, in: text)),
+              match.numberOfRanges > 1,
+              let matchRange = Range(match.range(at: 1), in: text)
+        else {
+            return nil
+        }
+
+        return String(text[matchRange])
+    }
+
+    private func matches(in text: String, pattern: String, options: NSRegularExpression.Options = []) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options),
+              let range = Range(NSRange(location: 0, length: text.utf16.count), in: text) else {
+            return []
+        }
+
+        return regex.matches(in: text, options: [], range: NSRange(range, in: text)).compactMap { match in
+            guard match.numberOfRanges > 1,
+                  let matchRange = Range(match.range(at: 1), in: text)
+            else {
+                return nil
+            }
+            return String(text[matchRange])
+        }
     }
 
     private func fetchTimings(city: String, country: String, method: Int, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
@@ -313,31 +512,32 @@ final class PrayerTimesViewModel: ObservableObject {
         lastRequestTime = Date()
         isLoading = true
         statusMessage = nil
-        debugInfo = "جاري الجلب حسب الإحداثيات: \(String(format: "%.4f", latitude)), \(String(format: "%.4f", longitude))"
+        let selectedGovernorate = normalizedGovernorateFromInput(fallbackCity) ?? "القاهرة"
+        debugInfo = "جاري الجلب من موقع الهيئة للمحافظة: \(selectedGovernorate)"
 
-        service.fetchTimingsWithFallback(latitude: latitude, longitude: longitude) { [weak self] result in
+        service.fetchTimingsFromEgyptianSurvey(governorate: selectedGovernorate) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
                 case .success(let timings):
-                    self.applySuccessfulFetch(timings, source: "تم التحديث بنجاح عبر الإحداثيات.")
+                    self.applySuccessfulFetch(timings, source: "تم التحديث من موقع الهيئة لمحافظة \(selectedGovernorate).")
                 case .failure:
-                    let city = (fallbackCity?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty ? "Cairo" : fallbackCity!.trimmingCharacters(in: .whitespacesAndNewlines)
-                    let country = (fallbackCountry?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty ? "Egypt" : fallbackCountry!.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let city = "Cairo"
+                    let country = "Egypt"
 
-                    self.debugInfo = "فشل الإحداثيات، جارٍ المحاولة عبر المدينة: \(city)، \(country) (افتراضي)"
+                    self.debugInfo = "فشل الجلب للمحافظة المختارة، جارٍ المحاولة عبر القاهرة"
 
                     self.service.fetchTimingsByCityWithFallback(city: city, country: country) { [weak self] cityResult in
                         DispatchQueue.main.async {
                             guard let self else { return }
                             switch cityResult {
                             case .success(let timings):
-                                self.applySuccessfulFetch(timings, source: "تم التحديث عبر المدينة بعد فشل الإحداثيات.")
+                                self.applySuccessfulFetch(timings, source: "تم التحديث عبر القاهرة بعد فشل المحافظة المختارة.")
                             case .failure(let cityError):
-                                self.statusMessage = "تعذر جلب أوقات الصلاة عبر الموقع والمدينة."
+                                self.statusMessage = "تعذر جلب أوقات الصلاة من موقع الهيئة."
                                 self.isLoading = false
                                 let nsError = cityError as NSError
-                                self.debugInfo = "فشل الجلب عبر المدينة أيضًا: \(nsError.domain) (\(nsError.code)) - \(nsError.localizedDescription)"
+                                self.debugInfo = "فشل الجلب من الهيئة أيضًا: \(nsError.domain) (\(nsError.code)) - \(nsError.localizedDescription)"
                             }
                         }
                     }
@@ -364,20 +564,52 @@ final class PrayerTimesViewModel: ObservableObject {
 
         isLoading = true
         statusMessage = nil
-        debugInfo = "جاري الجلب حسب المدينة: \(city)، \(country)"
+        let selectedGovernorate = normalizedGovernorateFromInput(city) ?? city
+        debugInfo = "جاري الجلب من موقع الهيئة للمحافظة: \(selectedGovernorate)"
 
-        service.fetchTimingsByCityWithFallback(city: city, country: country) { [weak self] result in
+        service.fetchTimingsFromEgyptianSurvey(governorate: selectedGovernorate) { [weak self] result in
             DispatchQueue.main.async {
                 guard let self else { return }
                 switch result {
                 case .success(let timings):
-                    self.applySuccessfulFetch(timings, source: "تم التحديث بنجاح عبر المدينة.")
+                    self.applySuccessfulFetch(timings, source: "تم التحديث بنجاح من موقع الهيئة لمحافظة \(selectedGovernorate).")
                 case .failure:
-                    self.statusMessage = "تعذر جلب أوقات الصلاة لهذه المدينة."
+                    self.statusMessage = "تعذر جلب أوقات الصلاة لهذه المحافظة من موقع الهيئة."
                     self.isLoading = false
-                    self.debugInfo = "فشل الجلب عبر المدينة"
+                    self.debugInfo = "فشل الجلب عبر موقع الهيئة"
                 }
             }
         }
+    }
+
+    private func normalizedGovernorateFromInput(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let mappings: [String: String] = [
+            "cairo": "القاهرة",
+            "alexandria": "الأسكندرية",
+            "giza": "الجيزة",
+            "aswan": "أســوان",
+            "luxor": "الأقصر",
+            "suez": "السـويس",
+            "port said": "بورسعيـد",
+            "ismailia": "الإسماعيلية",
+            "fayoum": "الفـيــوم",
+            "assiut": "أسيــوط",
+            "asyut": "أسيــوط",
+            "sohag": "سوهاج",
+            "minya": "المنيا",
+            "mansoura": "المنصورة",
+            "tanta": "طنطا"
+        ]
+
+        let englishKey = trimmed.lowercased()
+        if let mapped = mappings[englishKey] {
+            return mapped
+        }
+
+        return trimmed
     }
 }
