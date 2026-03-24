@@ -24,8 +24,6 @@ struct GamifiedHomeView: View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    // HomeBrandHeader removed per request
-
                     HeroProgressCard(store: store)
                     HomeTodayStatusCard(
                         completedCount: completedTodayCount,
@@ -33,8 +31,7 @@ struct GamifiedHomeView: View {
                         nextPrayerName: nextPrayerSlot?.arabicName
                     )
                     HomeQuickActionsCard(
-                        refreshAction: { refreshPrayerTimes(force: true) },
-                        quickLogAction: { quickLogTopTasks(limit: 3) }
+                        refreshAction: { refreshPrayerTimes(force: true) }
                     )
                     TimeBoundTasksCard(store: store, nextPrayer: nextPrayerSlot)
                     QuickLogSection(store: store, onlyNonPrayer: true, allowedPrayer: nextPrayerSlot?.arabicName)
@@ -90,15 +87,6 @@ struct GamifiedHomeView: View {
             fallbackCountry: locationManager.country,
             force: force
         )
-    }
-
-    private func quickLogTopTasks(limit: Int) {
-        let pendingTasks = store.allTasks.filter {
-            !store.isTaskCompleted($0, on: Date()) && (isFriday() || $0.category != "وظائف الجمعة")
-        }
-        for task in pendingTasks.prefix(limit) {
-            store.toggleTask(taskId: task.id, on: Date())
-        }
     }
 
     private var nextPrayerSlot: PrayerSlot? {
@@ -157,16 +145,12 @@ private struct HomeTodayStatusCard: View {
 
 private struct HomeQuickActionsCard: View {
     let refreshAction: () -> Void
-    let quickLogAction: () -> Void
 
     var body: some View {
-        HStack(spacing: 8) {
-            Button(action: quickLogAction) {
-                Label("تسجيل 3 مهام", systemImage: "checklist")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(AamalTheme.emerald)
+        VStack(alignment: .leading, spacing: 8) {
+            Text("التسجيل من الصفحة الرئيسية يتم مهمة بمهمة")
+                .font(.caption)
+                .foregroundColor(.secondary)
 
             Button(action: refreshAction) {
                 Label("تحديث الأوقات", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
@@ -176,6 +160,7 @@ private struct HomeQuickActionsCard: View {
             .tint(AamalTheme.gold)
         }
         .controlSize(.small)
+        .aamalCard()
     }
 }
 
@@ -408,17 +393,6 @@ private struct TimeBoundTasksCard: View {
                 }
 
                 PrayerTaskGroupCard(prayerName: nextPrayer.arabicName, tasks: nextPrayerTasks, store: store)
-
-                if !pendingNextPrayerTasks.isEmpty {
-                    Button("سجل المتبقي للصلاة القادمة") {
-                        for task in pendingNextPrayerTasks {
-                            store.toggleTask(taskId: task.id, on: Date())
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(AamalTheme.gold)
-                    .controlSize(.small)
-                }
             } else {
                 Text("لا توجد مهام صلاة حالياً")
                     .font(.subheadline)
