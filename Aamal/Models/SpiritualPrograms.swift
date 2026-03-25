@@ -1,0 +1,433 @@
+import Foundation
+
+enum PrayerCompensationType: String, CaseIterable, Codable, Identifiable {
+    case fajr
+    case dhuhr
+    case asr
+    case maghrib
+    case isha
+
+    var id: String { rawValue }
+
+    var arabicName: String {
+        switch self {
+        case .fajr:
+            return "الفجر"
+        case .dhuhr:
+            return "الظهر"
+        case .asr:
+            return "العصر"
+        case .maghrib:
+            return "المغرب"
+        case .isha:
+            return "العشاء"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .fajr:
+            return "sunrise.fill"
+        case .dhuhr:
+            return "sun.max.fill"
+        case .asr:
+            return "sun.haze.fill"
+        case .maghrib:
+            return "sunset.fill"
+        case .isha:
+            return "moon.stars.fill"
+        }
+    }
+}
+
+struct CompensationProgress: Codable {
+    var prayerDebtCounts: [String: Int]
+    var compensatedPrayerCounts: [String: Int]
+    var fastingDebtDays: Int
+    var compensatedFastingDays: Int
+    var lastActivityDate: Date?
+    var streak: Int
+
+    init(
+        prayerDebtCounts: [String: Int] = [:],
+        compensatedPrayerCounts: [String: Int] = [:],
+        fastingDebtDays: Int = 0,
+        compensatedFastingDays: Int = 0,
+        lastActivityDate: Date? = nil,
+        streak: Int = 0
+    ) {
+        self.prayerDebtCounts = prayerDebtCounts
+        self.compensatedPrayerCounts = compensatedPrayerCounts
+        self.fastingDebtDays = fastingDebtDays
+        self.compensatedFastingDays = compensatedFastingDays
+        self.lastActivityDate = lastActivityDate
+        self.streak = streak
+        normalize()
+    }
+
+    mutating func normalize() {
+        for prayer in PrayerCompensationType.allCases {
+            let debt = max(0, prayerDebtCounts[prayer.rawValue] ?? 0)
+            prayerDebtCounts[prayer.rawValue] = debt
+            compensatedPrayerCounts[prayer.rawValue] = min(max(0, compensatedPrayerCounts[prayer.rawValue] ?? 0), debt)
+        }
+
+        fastingDebtDays = max(0, fastingDebtDays)
+        compensatedFastingDays = min(max(0, compensatedFastingDays), fastingDebtDays)
+        streak = max(0, streak)
+    }
+}
+
+struct QuranRevisionPlan: Codable {
+    var totalMemorizedRubs: Int
+    var dailyGoalRubs: Int
+    var startDate: Date
+    var completedDates: [Date]
+    var lastCompletionDate: Date?
+    var streak: Int
+
+    init(
+        totalMemorizedRubs: Int = 0,
+        dailyGoalRubs: Int = 1,
+        startDate: Date = Date(),
+        completedDates: [Date] = [],
+        lastCompletionDate: Date? = nil,
+        streak: Int = 0
+    ) {
+        self.totalMemorizedRubs = totalMemorizedRubs
+        self.dailyGoalRubs = dailyGoalRubs
+        self.startDate = startDate
+        self.completedDates = completedDates
+        self.lastCompletionDate = lastCompletionDate
+        self.streak = streak
+        normalize()
+    }
+
+    mutating func normalize() {
+        totalMemorizedRubs = min(max(0, totalMemorizedRubs), 240)
+        dailyGoalRubs = min(max(1, dailyGoalRubs), max(1, totalMemorizedRubs == 0 ? 1 : totalMemorizedRubs))
+        completedDates = Array(Set(completedDates.map { Calendar.current.startOfDay(for: $0) })).sorted()
+        if let lastCompletionDate {
+            self.lastCompletionDate = Calendar.current.startOfDay(for: lastCompletionDate)
+        }
+        startDate = Calendar.current.startOfDay(for: startDate)
+        streak = max(0, streak)
+    }
+}
+
+struct QuranRubMetadata: Hashable {
+    let startPage: Int
+    let endPage: Int
+    let startSurah: String
+    let endSurah: String
+
+    var surahSpanText: String {
+        if startSurah == endSurah {
+            return "من سورة \(startSurah)"
+        }
+        return "من سورة \(startSurah) إلى سورة \(endSurah)"
+    }
+
+    var pageSpanText: String {
+        if startPage == endPage {
+            return "صفحة \(startPage)"
+        }
+        return "من صفحة \(startPage) إلى صفحة \(endPage)"
+    }
+
+    var spanSummary: String {
+        "\(surahSpanText) • \(pageSpanText)"
+    }
+}
+
+struct QuranRubReference: Identifiable, Hashable {
+    let globalRubIndex: Int
+
+    var id: Int { globalRubIndex }
+
+    var juzNumber: Int {
+        ((globalRubIndex - 1) / 8) + 1
+    }
+
+    var hizbNumberInJuz: Int {
+        (((globalRubIndex - 1) % 8) / 4) + 1
+    }
+
+    var rubNumberInHizb: Int {
+        (((globalRubIndex - 1) % 8) % 4) + 1
+    }
+
+    var shortTitle: String {
+        "ج\(juzNumber) • ح\(hizbNumberInJuz) • ر\(rubNumberInHizb)"
+    }
+
+    var detailedTitle: String {
+        "الجزء \(juzNumber) - الحزب \(hizbNumberInJuz) - الربع \(rubNumberInHizb)"
+    }
+
+    var metadata: QuranRubMetadata? {
+        quranRubMetadataLookup[globalRubIndex]
+    }
+
+    var surahSpanText: String {
+        metadata?.surahSpanText ?? ""
+    }
+
+    var pageSpanText: String {
+        metadata?.pageSpanText ?? ""
+    }
+
+    var spanSummary: String {
+        metadata?.spanSummary ?? ""
+    }
+}
+
+struct QuranDailyAssignment: Identifiable {
+    let date: Date
+    let rubs: [QuranRubReference]
+
+    var id: Date { date }
+}
+
+private let quranRubMetadataLookup: [Int: QuranRubMetadata] = [
+    1: QuranRubMetadata(startPage: 1, endPage: 5, startSurah: "الفاتحة", endSurah: "البقرة"),
+    2: QuranRubMetadata(startPage: 5, endPage: 7, startSurah: "البقرة", endSurah: "البقرة"),
+    3: QuranRubMetadata(startPage: 7, endPage: 9, startSurah: "البقرة", endSurah: "البقرة"),
+    4: QuranRubMetadata(startPage: 9, endPage: 11, startSurah: "البقرة", endSurah: "البقرة"),
+    5: QuranRubMetadata(startPage: 11, endPage: 14, startSurah: "البقرة", endSurah: "البقرة"),
+    6: QuranRubMetadata(startPage: 14, endPage: 16, startSurah: "البقرة", endSurah: "البقرة"),
+    7: QuranRubMetadata(startPage: 17, endPage: 19, startSurah: "البقرة", endSurah: "البقرة"),
+    8: QuranRubMetadata(startPage: 19, endPage: 21, startSurah: "البقرة", endSurah: "البقرة"),
+    9: QuranRubMetadata(startPage: 22, endPage: 24, startSurah: "البقرة", endSurah: "البقرة"),
+    10: QuranRubMetadata(startPage: 24, endPage: 26, startSurah: "البقرة", endSurah: "البقرة"),
+    11: QuranRubMetadata(startPage: 27, endPage: 29, startSurah: "البقرة", endSurah: "البقرة"),
+    12: QuranRubMetadata(startPage: 29, endPage: 31, startSurah: "البقرة", endSurah: "البقرة"),
+    13: QuranRubMetadata(startPage: 32, endPage: 34, startSurah: "البقرة", endSurah: "البقرة"),
+    14: QuranRubMetadata(startPage: 34, endPage: 37, startSurah: "البقرة", endSurah: "البقرة"),
+    15: QuranRubMetadata(startPage: 37, endPage: 39, startSurah: "البقرة", endSurah: "البقرة"),
+    16: QuranRubMetadata(startPage: 39, endPage: 41, startSurah: "البقرة", endSurah: "البقرة"),
+    17: QuranRubMetadata(startPage: 42, endPage: 44, startSurah: "البقرة", endSurah: "البقرة"),
+    18: QuranRubMetadata(startPage: 44, endPage: 46, startSurah: "البقرة", endSurah: "البقرة"),
+    19: QuranRubMetadata(startPage: 46, endPage: 48, startSurah: "البقرة", endSurah: "البقرة"),
+    20: QuranRubMetadata(startPage: 49, endPage: 51, startSurah: "البقرة", endSurah: "آل عمران"),
+    21: QuranRubMetadata(startPage: 51, endPage: 54, startSurah: "آل عمران", endSurah: "آل عمران"),
+    22: QuranRubMetadata(startPage: 54, endPage: 56, startSurah: "آل عمران", endSurah: "آل عمران"),
+    23: QuranRubMetadata(startPage: 56, endPage: 59, startSurah: "آل عمران", endSurah: "آل عمران"),
+    24: QuranRubMetadata(startPage: 59, endPage: 62, startSurah: "آل عمران", endSurah: "آل عمران"),
+    25: QuranRubMetadata(startPage: 62, endPage: 64, startSurah: "آل عمران", endSurah: "آل عمران"),
+    26: QuranRubMetadata(startPage: 64, endPage: 66, startSurah: "آل عمران", endSurah: "آل عمران"),
+    27: QuranRubMetadata(startPage: 67, endPage: 69, startSurah: "آل عمران", endSurah: "آل عمران"),
+    28: QuranRubMetadata(startPage: 69, endPage: 72, startSurah: "آل عمران", endSurah: "آل عمران"),
+    29: QuranRubMetadata(startPage: 72, endPage: 74, startSurah: "آل عمران", endSurah: "آل عمران"),
+    30: QuranRubMetadata(startPage: 74, endPage: 76, startSurah: "آل عمران", endSurah: "آل عمران"),
+    31: QuranRubMetadata(startPage: 77, endPage: 78, startSurah: "النساء", endSurah: "النساء"),
+    32: QuranRubMetadata(startPage: 79, endPage: 81, startSurah: "النساء", endSurah: "النساء"),
+    33: QuranRubMetadata(startPage: 82, endPage: 84, startSurah: "النساء", endSurah: "النساء"),
+    34: QuranRubMetadata(startPage: 84, endPage: 87, startSurah: "النساء", endSurah: "النساء"),
+    35: QuranRubMetadata(startPage: 87, endPage: 89, startSurah: "النساء", endSurah: "النساء"),
+    36: QuranRubMetadata(startPage: 89, endPage: 92, startSurah: "النساء", endSurah: "النساء"),
+    37: QuranRubMetadata(startPage: 92, endPage: 94, startSurah: "النساء", endSurah: "النساء"),
+    38: QuranRubMetadata(startPage: 94, endPage: 96, startSurah: "النساء", endSurah: "النساء"),
+    39: QuranRubMetadata(startPage: 97, endPage: 99, startSurah: "النساء", endSurah: "النساء"),
+    40: QuranRubMetadata(startPage: 100, endPage: 101, startSurah: "النساء", endSurah: "النساء"),
+    41: QuranRubMetadata(startPage: 102, endPage: 103, startSurah: "النساء", endSurah: "النساء"),
+    42: QuranRubMetadata(startPage: 104, endPage: 106, startSurah: "النساء", endSurah: "النساء"),
+    43: QuranRubMetadata(startPage: 106, endPage: 109, startSurah: "المائدة", endSurah: "المائدة"),
+    44: QuranRubMetadata(startPage: 109, endPage: 112, startSurah: "المائدة", endSurah: "المائدة"),
+    45: QuranRubMetadata(startPage: 112, endPage: 114, startSurah: "المائدة", endSurah: "المائدة"),
+    46: QuranRubMetadata(startPage: 114, endPage: 116, startSurah: "المائدة", endSurah: "المائدة"),
+    47: QuranRubMetadata(startPage: 117, endPage: 119, startSurah: "المائدة", endSurah: "المائدة"),
+    48: QuranRubMetadata(startPage: 119, endPage: 121, startSurah: "المائدة", endSurah: "المائدة"),
+    49: QuranRubMetadata(startPage: 121, endPage: 124, startSurah: "المائدة", endSurah: "المائدة"),
+    50: QuranRubMetadata(startPage: 124, endPage: 125, startSurah: "المائدة", endSurah: "المائدة"),
+    51: QuranRubMetadata(startPage: 126, endPage: 129, startSurah: "المائدة", endSurah: "الأنعام"),
+    52: QuranRubMetadata(startPage: 129, endPage: 131, startSurah: "الأنعام", endSurah: "الأنعام"),
+    53: QuranRubMetadata(startPage: 132, endPage: 134, startSurah: "الأنعام", endSurah: "الأنعام"),
+    54: QuranRubMetadata(startPage: 134, endPage: 136, startSurah: "الأنعام", endSurah: "الأنعام"),
+    55: QuranRubMetadata(startPage: 137, endPage: 139, startSurah: "الأنعام", endSurah: "الأنعام"),
+    56: QuranRubMetadata(startPage: 140, endPage: 141, startSurah: "الأنعام", endSurah: "الأنعام"),
+    57: QuranRubMetadata(startPage: 142, endPage: 144, startSurah: "الأنعام", endSurah: "الأنعام"),
+    58: QuranRubMetadata(startPage: 144, endPage: 146, startSurah: "الأنعام", endSurah: "الأنعام"),
+    59: QuranRubMetadata(startPage: 146, endPage: 148, startSurah: "الأنعام", endSurah: "الأنعام"),
+    60: QuranRubMetadata(startPage: 148, endPage: 150, startSurah: "الأنعام", endSurah: "الأنعام"),
+    61: QuranRubMetadata(startPage: 151, endPage: 153, startSurah: "الأعراف", endSurah: "الأعراف"),
+    62: QuranRubMetadata(startPage: 154, endPage: 156, startSurah: "الأعراف", endSurah: "الأعراف"),
+    63: QuranRubMetadata(startPage: 156, endPage: 158, startSurah: "الأعراف", endSurah: "الأعراف"),
+    64: QuranRubMetadata(startPage: 158, endPage: 161, startSurah: "الأعراف", endSurah: "الأعراف"),
+    65: QuranRubMetadata(startPage: 162, endPage: 164, startSurah: "الأعراف", endSurah: "الأعراف"),
+    66: QuranRubMetadata(startPage: 164, endPage: 167, startSurah: "الأعراف", endSurah: "الأعراف"),
+    67: QuranRubMetadata(startPage: 167, endPage: 169, startSurah: "الأعراف", endSurah: "الأعراف"),
+    68: QuranRubMetadata(startPage: 170, endPage: 172, startSurah: "الأعراف", endSurah: "الأعراف"),
+    69: QuranRubMetadata(startPage: 173, endPage: 175, startSurah: "الأعراف", endSurah: "الأعراف"),
+    70: QuranRubMetadata(startPage: 175, endPage: 176, startSurah: "الأعراف", endSurah: "الأعراف"),
+    71: QuranRubMetadata(startPage: 177, endPage: 179, startSurah: "الأنفال", endSurah: "الأنفال"),
+    72: QuranRubMetadata(startPage: 179, endPage: 181, startSurah: "الأنفال", endSurah: "الأنفال"),
+    73: QuranRubMetadata(startPage: 182, endPage: 184, startSurah: "الأنفال", endSurah: "الأنفال"),
+    74: QuranRubMetadata(startPage: 184, endPage: 186, startSurah: "الأنفال", endSurah: "الأنفال"),
+    75: QuranRubMetadata(startPage: 187, endPage: 189, startSurah: "التوبة", endSurah: "التوبة"),
+    76: QuranRubMetadata(startPage: 189, endPage: 192, startSurah: "التوبة", endSurah: "التوبة"),
+    77: QuranRubMetadata(startPage: 192, endPage: 194, startSurah: "التوبة", endSurah: "التوبة"),
+    78: QuranRubMetadata(startPage: 194, endPage: 196, startSurah: "التوبة", endSurah: "التوبة"),
+    79: QuranRubMetadata(startPage: 196, endPage: 199, startSurah: "التوبة", endSurah: "التوبة"),
+    80: QuranRubMetadata(startPage: 199, endPage: 201, startSurah: "التوبة", endSurah: "التوبة"),
+    81: QuranRubMetadata(startPage: 201, endPage: 204, startSurah: "التوبة", endSurah: "التوبة"),
+    82: QuranRubMetadata(startPage: 204, endPage: 206, startSurah: "التوبة", endSurah: "التوبة"),
+    83: QuranRubMetadata(startPage: 206, endPage: 209, startSurah: "التوبة", endSurah: "يونس"),
+    84: QuranRubMetadata(startPage: 209, endPage: 211, startSurah: "يونس", endSurah: "يونس"),
+    85: QuranRubMetadata(startPage: 212, endPage: 214, startSurah: "يونس", endSurah: "يونس"),
+    86: QuranRubMetadata(startPage: 214, endPage: 216, startSurah: "يونس", endSurah: "يونس"),
+    87: QuranRubMetadata(startPage: 217, endPage: 219, startSurah: "يونس", endSurah: "يونس"),
+    88: QuranRubMetadata(startPage: 219, endPage: 221, startSurah: "يونس", endSurah: "هود"),
+    89: QuranRubMetadata(startPage: 222, endPage: 224, startSurah: "هود", endSurah: "هود"),
+    90: QuranRubMetadata(startPage: 224, endPage: 226, startSurah: "هود", endSurah: "هود"),
+    91: QuranRubMetadata(startPage: 226, endPage: 228, startSurah: "هود", endSurah: "هود"),
+    92: QuranRubMetadata(startPage: 228, endPage: 231, startSurah: "هود", endSurah: "هود"),
+    93: QuranRubMetadata(startPage: 231, endPage: 233, startSurah: "هود", endSurah: "هود"),
+    94: QuranRubMetadata(startPage: 233, endPage: 236, startSurah: "هود", endSurah: "يوسف"),
+    95: QuranRubMetadata(startPage: 236, endPage: 238, startSurah: "يوسف", endSurah: "يوسف"),
+    96: QuranRubMetadata(startPage: 238, endPage: 241, startSurah: "يوسف", endSurah: "يوسف"),
+    97: QuranRubMetadata(startPage: 242, endPage: 244, startSurah: "يوسف", endSurah: "يوسف"),
+    98: QuranRubMetadata(startPage: 244, endPage: 247, startSurah: "يوسف", endSurah: "يوسف"),
+    99: QuranRubMetadata(startPage: 247, endPage: 249, startSurah: "يوسف", endSurah: "الرعد"),
+    100: QuranRubMetadata(startPage: 249, endPage: 251, startSurah: "الرعد", endSurah: "الرعد"),
+    101: QuranRubMetadata(startPage: 252, endPage: 253, startSurah: "الرعد", endSurah: "الرعد"),
+    102: QuranRubMetadata(startPage: 254, endPage: 256, startSurah: "الرعد", endSurah: "ابراهيم"),
+    103: QuranRubMetadata(startPage: 256, endPage: 259, startSurah: "ابراهيم", endSurah: "ابراهيم"),
+    104: QuranRubMetadata(startPage: 259, endPage: 261, startSurah: "ابراهيم", endSurah: "ابراهيم"),
+    105: QuranRubMetadata(startPage: 262, endPage: 264, startSurah: "الحجر", endSurah: "الحجر"),
+    106: QuranRubMetadata(startPage: 264, endPage: 267, startSurah: "الحجر", endSurah: "الحجر"),
+    107: QuranRubMetadata(startPage: 267, endPage: 270, startSurah: "النحل", endSurah: "النحل"),
+    108: QuranRubMetadata(startPage: 270, endPage: 272, startSurah: "النحل", endSurah: "النحل"),
+    109: QuranRubMetadata(startPage: 272, endPage: 275, startSurah: "النحل", endSurah: "النحل"),
+    110: QuranRubMetadata(startPage: 275, endPage: 277, startSurah: "النحل", endSurah: "النحل"),
+    111: QuranRubMetadata(startPage: 277, endPage: 279, startSurah: "النحل", endSurah: "النحل"),
+    112: QuranRubMetadata(startPage: 280, endPage: 281, startSurah: "النحل", endSurah: "النحل"),
+    113: QuranRubMetadata(startPage: 282, endPage: 284, startSurah: "الإسراء", endSurah: "الإسراء"),
+    114: QuranRubMetadata(startPage: 284, endPage: 286, startSurah: "الإسراء", endSurah: "الإسراء"),
+    115: QuranRubMetadata(startPage: 287, endPage: 289, startSurah: "الإسراء", endSurah: "الإسراء"),
+    116: QuranRubMetadata(startPage: 289, endPage: 292, startSurah: "الإسراء", endSurah: "الإسراء"),
+    117: QuranRubMetadata(startPage: 292, endPage: 295, startSurah: "الإسراء", endSurah: "الكهف"),
+    118: QuranRubMetadata(startPage: 295, endPage: 297, startSurah: "الكهف", endSurah: "الكهف"),
+    119: QuranRubMetadata(startPage: 297, endPage: 299, startSurah: "الكهف", endSurah: "الكهف"),
+    120: QuranRubMetadata(startPage: 299, endPage: 301, startSurah: "الكهف", endSurah: "الكهف"),
+    121: QuranRubMetadata(startPage: 302, endPage: 304, startSurah: "الكهف", endSurah: "الكهف"),
+    122: QuranRubMetadata(startPage: 304, endPage: 306, startSurah: "الكهف", endSurah: "مريم"),
+    123: QuranRubMetadata(startPage: 306, endPage: 309, startSurah: "مريم", endSurah: "مريم"),
+    124: QuranRubMetadata(startPage: 309, endPage: 312, startSurah: "مريم", endSurah: "مريم"),
+    125: QuranRubMetadata(startPage: 312, endPage: 315, startSurah: "طه", endSurah: "طه"),
+    126: QuranRubMetadata(startPage: 315, endPage: 317, startSurah: "طه", endSurah: "طه"),
+    127: QuranRubMetadata(startPage: 317, endPage: 319, startSurah: "طه", endSurah: "طه"),
+    128: QuranRubMetadata(startPage: 319, endPage: 321, startSurah: "طه", endSurah: "طه"),
+    129: QuranRubMetadata(startPage: 322, endPage: 324, startSurah: "الأنبياء", endSurah: "الأنبياء"),
+    130: QuranRubMetadata(startPage: 324, endPage: 326, startSurah: "الأنبياء", endSurah: "الأنبياء"),
+    131: QuranRubMetadata(startPage: 326, endPage: 329, startSurah: "الأنبياء", endSurah: "الأنبياء"),
+    132: QuranRubMetadata(startPage: 329, endPage: 331, startSurah: "الأنبياء", endSurah: "الأنبياء"),
+    133: QuranRubMetadata(startPage: 332, endPage: 334, startSurah: "الحج", endSurah: "الحج"),
+    134: QuranRubMetadata(startPage: 334, endPage: 336, startSurah: "الحج", endSurah: "الحج"),
+    135: QuranRubMetadata(startPage: 336, endPage: 339, startSurah: "الحج", endSurah: "الحج"),
+    136: QuranRubMetadata(startPage: 339, endPage: 341, startSurah: "الحج", endSurah: "الحج"),
+    137: QuranRubMetadata(startPage: 342, endPage: 344, startSurah: "المؤمنون", endSurah: "المؤمنون"),
+    138: QuranRubMetadata(startPage: 344, endPage: 346, startSurah: "المؤمنون", endSurah: "المؤمنون"),
+    139: QuranRubMetadata(startPage: 347, endPage: 349, startSurah: "المؤمنون", endSurah: "المؤمنون"),
+    140: QuranRubMetadata(startPage: 350, endPage: 351, startSurah: "النور", endSurah: "النور"),
+    141: QuranRubMetadata(startPage: 352, endPage: 354, startSurah: "النور", endSurah: "النور"),
+    142: QuranRubMetadata(startPage: 354, endPage: 356, startSurah: "النور", endSurah: "النور"),
+    143: QuranRubMetadata(startPage: 356, endPage: 359, startSurah: "النور", endSurah: "النور"),
+    144: QuranRubMetadata(startPage: 359, endPage: 361, startSurah: "الفرقان", endSurah: "الفرقان"),
+    145: QuranRubMetadata(startPage: 362, endPage: 364, startSurah: "الفرقان", endSurah: "الفرقان"),
+    146: QuranRubMetadata(startPage: 364, endPage: 366, startSurah: "الفرقان", endSurah: "الفرقان"),
+    147: QuranRubMetadata(startPage: 367, endPage: 369, startSurah: "الشعراء", endSurah: "الشعراء"),
+    148: QuranRubMetadata(startPage: 369, endPage: 371, startSurah: "الشعراء", endSurah: "الشعراء"),
+    149: QuranRubMetadata(startPage: 371, endPage: 374, startSurah: "الشعراء", endSurah: "الشعراء"),
+    150: QuranRubMetadata(startPage: 374, endPage: 376, startSurah: "الشعراء", endSurah: "الشعراء"),
+    151: QuranRubMetadata(startPage: 377, endPage: 379, startSurah: "النمل", endSurah: "النمل"),
+    152: QuranRubMetadata(startPage: 379, endPage: 381, startSurah: "النمل", endSurah: "النمل"),
+    153: QuranRubMetadata(startPage: 382, endPage: 384, startSurah: "النمل", endSurah: "النمل"),
+    154: QuranRubMetadata(startPage: 384, endPage: 386, startSurah: "النمل", endSurah: "القصص"),
+    155: QuranRubMetadata(startPage: 386, endPage: 388, startSurah: "القصص", endSurah: "القصص"),
+    156: QuranRubMetadata(startPage: 389, endPage: 391, startSurah: "القصص", endSurah: "القصص"),
+    157: QuranRubMetadata(startPage: 392, endPage: 394, startSurah: "القصص", endSurah: "القصص"),
+    158: QuranRubMetadata(startPage: 394, endPage: 396, startSurah: "القصص", endSurah: "القصص"),
+    159: QuranRubMetadata(startPage: 396, endPage: 399, startSurah: "العنكبوت", endSurah: "العنكبوت"),
+    160: QuranRubMetadata(startPage: 399, endPage: 401, startSurah: "العنكبوت", endSurah: "العنكبوت"),
+    161: QuranRubMetadata(startPage: 402, endPage: 404, startSurah: "العنكبوت", endSurah: "العنكبوت"),
+    162: QuranRubMetadata(startPage: 404, endPage: 407, startSurah: "الروم", endSurah: "الروم"),
+    163: QuranRubMetadata(startPage: 407, endPage: 410, startSurah: "الروم", endSurah: "الروم"),
+    164: QuranRubMetadata(startPage: 410, endPage: 413, startSurah: "الروم", endSurah: "لقمان"),
+    165: QuranRubMetadata(startPage: 413, endPage: 415, startSurah: "لقمان", endSurah: "السجدة"),
+    166: QuranRubMetadata(startPage: 415, endPage: 417, startSurah: "السجدة", endSurah: "السجدة"),
+    167: QuranRubMetadata(startPage: 418, endPage: 420, startSurah: "الأحزاب", endSurah: "الأحزاب"),
+    168: QuranRubMetadata(startPage: 420, endPage: 421, startSurah: "الأحزاب", endSurah: "الأحزاب"),
+    169: QuranRubMetadata(startPage: 422, endPage: 424, startSurah: "الأحزاب", endSurah: "الأحزاب"),
+    170: QuranRubMetadata(startPage: 425, endPage: 426, startSurah: "الأحزاب", endSurah: "الأحزاب"),
+    171: QuranRubMetadata(startPage: 426, endPage: 429, startSurah: "الأحزاب", endSurah: "سبإ"),
+    172: QuranRubMetadata(startPage: 429, endPage: 431, startSurah: "سبإ", endSurah: "سبإ"),
+    173: QuranRubMetadata(startPage: 431, endPage: 433, startSurah: "سبإ", endSurah: "سبإ"),
+    174: QuranRubMetadata(startPage: 433, endPage: 436, startSurah: "سبإ", endSurah: "فاطر"),
+    175: QuranRubMetadata(startPage: 436, endPage: 439, startSurah: "فاطر", endSurah: "فاطر"),
+    176: QuranRubMetadata(startPage: 439, endPage: 441, startSurah: "فاطر", endSurah: "يس"),
+    177: QuranRubMetadata(startPage: 442, endPage: 444, startSurah: "يس", endSurah: "يس"),
+    178: QuranRubMetadata(startPage: 444, endPage: 446, startSurah: "يس", endSurah: "الصافات"),
+    179: QuranRubMetadata(startPage: 446, endPage: 449, startSurah: "الصافات", endSurah: "الصافات"),
+    180: QuranRubMetadata(startPage: 449, endPage: 451, startSurah: "الصافات", endSurah: "الصافات"),
+    181: QuranRubMetadata(startPage: 451, endPage: 454, startSurah: "الصافات", endSurah: "ص"),
+    182: QuranRubMetadata(startPage: 454, endPage: 456, startSurah: "ص", endSurah: "ص"),
+    183: QuranRubMetadata(startPage: 456, endPage: 459, startSurah: "ص", endSurah: "الزمر"),
+    184: QuranRubMetadata(startPage: 459, endPage: 461, startSurah: "الزمر", endSurah: "الزمر"),
+    185: QuranRubMetadata(startPage: 462, endPage: 464, startSurah: "الزمر", endSurah: "الزمر"),
+    186: QuranRubMetadata(startPage: 464, endPage: 467, startSurah: "الزمر", endSurah: "الزمر"),
+    187: QuranRubMetadata(startPage: 467, endPage: 469, startSurah: "غافر", endSurah: "غافر"),
+    188: QuranRubMetadata(startPage: 469, endPage: 471, startSurah: "غافر", endSurah: "غافر"),
+    189: QuranRubMetadata(startPage: 472, endPage: 474, startSurah: "غافر", endSurah: "غافر"),
+    190: QuranRubMetadata(startPage: 474, endPage: 477, startSurah: "غافر", endSurah: "فصلت"),
+    191: QuranRubMetadata(startPage: 477, endPage: 479, startSurah: "فصلت", endSurah: "فصلت"),
+    192: QuranRubMetadata(startPage: 479, endPage: 481, startSurah: "فصلت", endSurah: "فصلت"),
+    193: QuranRubMetadata(startPage: 482, endPage: 484, startSurah: "فصلت", endSurah: "الشورى"),
+    194: QuranRubMetadata(startPage: 484, endPage: 486, startSurah: "الشورى", endSurah: "الشورى"),
+    195: QuranRubMetadata(startPage: 486, endPage: 488, startSurah: "الشورى", endSurah: "الشورى"),
+    196: QuranRubMetadata(startPage: 488, endPage: 491, startSurah: "الشورى", endSurah: "الزخرف"),
+    197: QuranRubMetadata(startPage: 491, endPage: 493, startSurah: "الزخرف", endSurah: "الزخرف"),
+    198: QuranRubMetadata(startPage: 493, endPage: 496, startSurah: "الزخرف", endSurah: "الدخان"),
+    199: QuranRubMetadata(startPage: 496, endPage: 499, startSurah: "الدخان", endSurah: "الجاثية"),
+    200: QuranRubMetadata(startPage: 499, endPage: 502, startSurah: "الجاثية", endSurah: "الجاثية"),
+    201: QuranRubMetadata(startPage: 502, endPage: 504, startSurah: "الأحقاف", endSurah: "الأحقاف"),
+    202: QuranRubMetadata(startPage: 505, endPage: 507, startSurah: "الأحقاف", endSurah: "محمد"),
+    203: QuranRubMetadata(startPage: 507, endPage: 510, startSurah: "محمد", endSurah: "محمد"),
+    204: QuranRubMetadata(startPage: 510, endPage: 513, startSurah: "محمد", endSurah: "الفتح"),
+    205: QuranRubMetadata(startPage: 513, endPage: 515, startSurah: "الفتح", endSurah: "الفتح"),
+    206: QuranRubMetadata(startPage: 515, endPage: 517, startSurah: "الحجرات", endSurah: "الحجرات"),
+    207: QuranRubMetadata(startPage: 517, endPage: 519, startSurah: "الحجرات", endSurah: "ق"),
+    208: QuranRubMetadata(startPage: 519, endPage: 521, startSurah: "ق", endSurah: "الذاريات"),
+    209: QuranRubMetadata(startPage: 522, endPage: 524, startSurah: "الذاريات", endSurah: "الطور"),
+    210: QuranRubMetadata(startPage: 524, endPage: 526, startSurah: "الطور", endSurah: "النجم"),
+    211: QuranRubMetadata(startPage: 526, endPage: 529, startSurah: "النجم", endSurah: "القمر"),
+    212: QuranRubMetadata(startPage: 529, endPage: 531, startSurah: "القمر", endSurah: "القمر"),
+    213: QuranRubMetadata(startPage: 531, endPage: 534, startSurah: "الرحمن", endSurah: "الرحمن"),
+    214: QuranRubMetadata(startPage: 534, endPage: 536, startSurah: "الواقعة", endSurah: "الواقعة"),
+    215: QuranRubMetadata(startPage: 536, endPage: 539, startSurah: "الواقعة", endSurah: "الحديد"),
+    216: QuranRubMetadata(startPage: 539, endPage: 541, startSurah: "الحديد", endSurah: "الحديد"),
+    217: QuranRubMetadata(startPage: 542, endPage: 544, startSurah: "المجادلة", endSurah: "المجادلة"),
+    218: QuranRubMetadata(startPage: 544, endPage: 547, startSurah: "المجادلة", endSurah: "الحشر"),
+    219: QuranRubMetadata(startPage: 547, endPage: 550, startSurah: "الحشر", endSurah: "الممتحنة"),
+    220: QuranRubMetadata(startPage: 550, endPage: 552, startSurah: "الممتحنة", endSurah: "الصف"),
+    221: QuranRubMetadata(startPage: 553, endPage: 554, startSurah: "الجمعة", endSurah: "المنافقون"),
+    222: QuranRubMetadata(startPage: 554, endPage: 557, startSurah: "المنافقون", endSurah: "التغابن"),
+    223: QuranRubMetadata(startPage: 558, endPage: 559, startSurah: "الطلاق", endSurah: "الطلاق"),
+    224: QuranRubMetadata(startPage: 560, endPage: 561, startSurah: "التحريم", endSurah: "التحريم"),
+    225: QuranRubMetadata(startPage: 562, endPage: 564, startSurah: "الملك", endSurah: "الملك"),
+    226: QuranRubMetadata(startPage: 564, endPage: 566, startSurah: "القلم", endSurah: "القلم"),
+    227: QuranRubMetadata(startPage: 566, endPage: 569, startSurah: "الحاقة", endSurah: "المعارج"),
+    228: QuranRubMetadata(startPage: 569, endPage: 571, startSurah: "المعارج", endSurah: "نوح"),
+    229: QuranRubMetadata(startPage: 572, endPage: 574, startSurah: "الجن", endSurah: "المزمل"),
+    230: QuranRubMetadata(startPage: 575, endPage: 577, startSurah: "المزمل", endSurah: "المدثر"),
+    231: QuranRubMetadata(startPage: 577, endPage: 579, startSurah: "القيامة", endSurah: "الانسان"),
+    232: QuranRubMetadata(startPage: 579, endPage: 581, startSurah: "الانسان", endSurah: "المرسلات"),
+    233: QuranRubMetadata(startPage: 582, endPage: 584, startSurah: "النبإ", endSurah: "النازعات"),
+    234: QuranRubMetadata(startPage: 585, endPage: 586, startSurah: "عبس", endSurah: "التكوير"),
+    235: QuranRubMetadata(startPage: 587, endPage: 589, startSurah: "الإنفطار", endSurah: "المطففين"),
+    236: QuranRubMetadata(startPage: 589, endPage: 591, startSurah: "الإنشقاق", endSurah: "الطارق"),
+    237: QuranRubMetadata(startPage: 591, endPage: 594, startSurah: "الأعلى", endSurah: "الفجر"),
+    238: QuranRubMetadata(startPage: 594, endPage: 596, startSurah: "البلد", endSurah: "الضحى"),
+    239: QuranRubMetadata(startPage: 596, endPage: 599, startSurah: "الشرح", endSurah: "العاديات"),
+    240: QuranRubMetadata(startPage: 599, endPage: 604, startSurah: "العاديات", endSurah: "الناس"),
+]

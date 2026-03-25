@@ -26,6 +26,16 @@ struct ContentView: View {
                 .tabItem {
                     Label("التقدم", systemImage: "chart.bar.fill")
                 }
+
+            CompensationTrackerView(store: store)
+                .tabItem {
+                    Label("القضاء", systemImage: "clock.badge.checkmark")
+                }
+
+            QuranRevisionView(store: store)
+                .tabItem {
+                    Label("المراجعة", systemImage: "book.closed.fill")
+                }
         }
         .environment(\.layoutDirection, .rightToLeft)
         .environment(\.locale, Locale(identifier: "ar"))

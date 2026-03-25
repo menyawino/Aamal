@@ -58,6 +58,8 @@ final class TaskStore: ObservableObject {
     @Published private(set) var tasbihCounts: [String: Int] = [:]
     @Published private(set) var dailyDuaIndex: Int = 0
     @Published private(set) var lastResetDate: Date = Date()
+    @Published private(set) var compensationProgress = CompensationProgress()
+    @Published private(set) var quranRevisionPlan = QuranRevisionPlan()
 
     private let xpPerLevel: Int = 20
     private var lastCompletionDate: Date?
@@ -76,6 +78,8 @@ final class TaskStore: ObservableObject {
         static let dailyDuaIndex = "dailyDuaIndex"
         static let lastResetDate = "lastResetDate"
         static let lastCompletionDate = "lastCompletionDate"
+        static let compensationProgress = "compensationProgress"
+        static let quranRevisionPlan = "quranRevisionPlan"
     }
 
     init(categories: [TaskCategory] = [dailyCategory, fridayTasks]) {
@@ -125,6 +129,18 @@ final class TaskStore: ObservableObject {
            let decoded = try? decoder.decode([String: Int].self, from: tasbihData) {
             tasbihCounts = decoded
         }
+
+        if let compensationData = userDefaults.data(forKey: Keys.compensationProgress),
+           let decoded = try? decoder.decode(CompensationProgress.self, from: compensationData) {
+            compensationProgress = decoded
+            compensationProgress.normalize()
+        }
+
+        if let revisionData = userDefaults.data(forKey: Keys.quranRevisionPlan),
+           let decoded = try? decoder.decode(QuranRevisionPlan.self, from: revisionData) {
+            quranRevisionPlan = decoded
+            quranRevisionPlan.normalize()
+        }
     }
 
     private func saveData() {
@@ -150,6 +166,14 @@ final class TaskStore: ObservableObject {
 
         if let tasbihData = try? encoder.encode(tasbihCounts) {
             userDefaults.set(tasbihData, forKey: Keys.tasbihCounts)
+        }
+
+        if let compensationData = try? encoder.encode(compensationProgress) {
+            userDefaults.set(compensationData, forKey: Keys.compensationProgress)
+        }
+
+        if let revisionData = try? encoder.encode(quranRevisionPlan) {
+            userDefaults.set(revisionData, forKey: Keys.quranRevisionPlan)
         }
     }
 
@@ -236,6 +260,97 @@ final class TaskStore: ObservableObject {
         ["الصبح", "الظهر", "العصر", "المغرب", "العشاء"]
     }
 
+    var totalPrayerDebtCount: Int {
+        PrayerCompensationType.allCases.reduce(0) { partial, prayer in
+            partial + (compensationProgress.prayerDebtCounts[prayer.rawValue] ?? 0)
+        }
+    }
+
+    var totalCompensatedPrayerCount: Int {
+        PrayerCompensationType.allCases.reduce(0) { partial, prayer in
+            partial + (compensationProgress.compensatedPrayerCounts[prayer.rawValue] ?? 0)
+        }
+    }
+
+    var remainingPrayerDebtCount: Int {
+        max(0, totalPrayerDebtCount - totalCompensatedPrayerCount)
+    }
+
+    var remainingFastingDebtDays: Int {
+        max(0, compensationProgress.fastingDebtDays - compensationProgress.compensatedFastingDays)
+    }
+
+    var totalCompensationDebtUnits: Int {
+        totalPrayerDebtCount + compensationProgress.fastingDebtDays
+    }
+
+    var totalCompensatedDebtUnits: Int {
+        totalCompensatedPrayerCount + compensationProgress.compensatedFastingDays
+    }
+
+    var compensationCompletionRate: Double {
+        guard totalCompensationDebtUnits > 0 else { return 0 }
+        return Double(totalCompensatedDebtUnits) / Double(totalCompensationDebtUnits)
+    }
+
+    var compensationRankTitle: String {
+        switch compensationCompletionRate {
+        case 1...:
+            return "محرر الذمة"
+        case 0.75...:
+            return "ثابت في القضاء"
+        case 0.4...:
+            return "صاعد بثبات"
+        case 0.1...:
+            return "بداية قوية"
+        default:
+            return "قيد الانطلاق"
+        }
+    }
+
+    var compensationSuggestedFocus: String {
+        if remainingFastingDebtDays > 0 {
+            return "ابدأ بيوم صيام قضاء لتقليل الرصيد الأكبر أثرًا."
+        }
+
+        if let prayer = PrayerCompensationType.allCases.max(by: { remainingPrayerDebt(for: $0) < remainingPrayerDebt(for: $1) }),
+           remainingPrayerDebt(for: prayer) > 0 {
+            return "ركز اليوم على قضاء \(prayer.arabicName) لتخفيف المتبقي سريعًا."
+        }
+
+        return "ذمتك خفيفة الآن. حافظ على الثبات اليومي."
+    }
+
+    var quranRevisionCompletionRate: Double {
+        guard quranRevisionPlan.totalMemorizedRubs > 0 else { return 0 }
+        let completedRubs = quranRevisionPlan.completedDates.count * quranRevisionPlan.dailyGoalRubs
+        let cycleRubs = completedRubs % quranRevisionPlan.totalMemorizedRubs
+        return Double(cycleRubs) / Double(quranRevisionPlan.totalMemorizedRubs)
+    }
+
+    var quranRevisionRankTitle: String {
+        switch quranRevisionPlan.streak {
+        case 30...:
+            return "حارس المحفوظ"
+        case 14...:
+            return "رفيق الورد"
+        case 7...:
+            return "صاحب المراجعة"
+        case 1...:
+            return "بداية الورد"
+        default:
+            return "هيئ الخطة"
+        }
+    }
+
+    var todaysQuranRevision: [QuranRubReference] {
+        quranRevisionAssignment(for: Date())
+    }
+
+    var upcomingQuranRevisionAssignments: [QuranDailyAssignment] {
+        quranRevisionAssignments(days: 6)
+    }
+
     func isPrayerTask(_ task: Task) -> Bool {
         prayerNames.contains(task.category)
     }
@@ -246,6 +361,130 @@ final class TaskStore: ObservableObject {
 
     func wuduTasks() -> [Task] {
         allTasks.filter { $0.name.contains("الوضوء") }
+    }
+
+    func remainingPrayerDebt(for prayer: PrayerCompensationType) -> Int {
+        let debt = compensationProgress.prayerDebtCounts[prayer.rawValue] ?? 0
+        let compensated = compensationProgress.compensatedPrayerCounts[prayer.rawValue] ?? 0
+        return max(0, debt - compensated)
+    }
+
+    func compensatedPrayerCount(for prayer: PrayerCompensationType) -> Int {
+        compensationProgress.compensatedPrayerCounts[prayer.rawValue] ?? 0
+    }
+
+    func prayerDebtCount(for prayer: PrayerCompensationType) -> Int {
+        compensationProgress.prayerDebtCounts[prayer.rawValue] ?? 0
+    }
+
+    func updateCompensationTargets(prayerCounts: [PrayerCompensationType: Int], fastingDays: Int) {
+        for prayer in PrayerCompensationType.allCases {
+            let debt = max(0, prayerCounts[prayer] ?? 0)
+            compensationProgress.prayerDebtCounts[prayer.rawValue] = debt
+            let compensated = compensationProgress.compensatedPrayerCounts[prayer.rawValue] ?? 0
+            compensationProgress.compensatedPrayerCounts[prayer.rawValue] = min(compensated, debt)
+        }
+
+        compensationProgress.fastingDebtDays = max(0, fastingDays)
+        compensationProgress.compensatedFastingDays = min(
+            compensationProgress.compensatedFastingDays,
+            compensationProgress.fastingDebtDays
+        )
+        compensationProgress.normalize()
+        saveData()
+    }
+
+    @discardableResult
+    func logCompensatedPrayer(_ prayer: PrayerCompensationType, count: Int = 1, on date: Date = Date()) -> Int {
+        let remaining = remainingPrayerDebt(for: prayer)
+        let loggedCount = min(max(0, count), remaining)
+        guard loggedCount > 0 else { return 0 }
+
+        compensationProgress.compensatedPrayerCounts[prayer.rawValue, default: 0] += loggedCount
+        updateCompensationStreak(on: date)
+        grantXP(loggedCount * 3)
+        awardCompensationBadgesIfNeeded()
+        saveData()
+        return loggedCount
+    }
+
+    @discardableResult
+    func logCompensatedFastingDays(_ count: Int = 1, on date: Date = Date()) -> Int {
+        let remaining = remainingFastingDebtDays
+        let loggedCount = min(max(0, count), remaining)
+        guard loggedCount > 0 else { return 0 }
+
+        compensationProgress.compensatedFastingDays += loggedCount
+        updateCompensationStreak(on: date)
+        grantXP(loggedCount * 12)
+        awardCompensationBadgesIfNeeded()
+        saveData()
+        return loggedCount
+    }
+
+    func configureQuranRevisionPlan(juzCount: Int, additionalHizb: Int, additionalRub: Int, dailyGoalRubs: Int) {
+        let safeJuz = min(max(0, juzCount), 30)
+        let safeHizb = min(max(0, additionalHizb), safeJuz == 30 ? 0 : 1)
+        let maxAdditionalRub = safeJuz == 30 && safeHizb == 0 ? 0 : 3
+        let safeRub = min(max(0, additionalRub), maxAdditionalRub)
+        let totalRubs = min(240, (safeJuz * 8) + (safeHizb * 4) + safeRub)
+        let goal = min(max(1, dailyGoalRubs), max(1, totalRubs == 0 ? 1 : totalRubs))
+
+        quranRevisionPlan = QuranRevisionPlan(
+            totalMemorizedRubs: totalRubs,
+            dailyGoalRubs: goal,
+            startDate: Date(),
+            completedDates: [],
+            lastCompletionDate: nil,
+            streak: 0
+        )
+        saveData()
+    }
+
+    func isQuranRevisionCompleted(on date: Date = Date()) -> Bool {
+        let dayKey = dateKey(date)
+        return quranRevisionPlan.completedDates.contains(dayKey)
+    }
+
+    @discardableResult
+    func markQuranRevisionCompleted(on date: Date = Date()) -> Bool {
+        guard quranRevisionPlan.totalMemorizedRubs > 0 else { return false }
+        let dayKey = dateKey(date)
+        guard !quranRevisionPlan.completedDates.contains(dayKey) else { return false }
+
+        quranRevisionPlan.completedDates.append(dayKey)
+        quranRevisionPlan.completedDates.sort()
+        updateQuranRevisionStreak(on: dayKey)
+        grantXP(quranRevisionPlan.dailyGoalRubs * 6)
+        awardQuranRevisionBadgesIfNeeded()
+        saveData()
+        return true
+    }
+
+    func quranRevisionAssignment(for date: Date) -> [QuranRubReference] {
+        let totalRubs = quranRevisionPlan.totalMemorizedRubs
+        guard totalRubs > 0 else { return [] }
+
+        let startDate = dateKey(quranRevisionPlan.startDate)
+        let day = dateKey(date)
+        let elapsedDays = max(0, Calendar.current.dateComponents([.day], from: startDate, to: day).day ?? 0)
+        let startIndex = (elapsedDays * quranRevisionPlan.dailyGoalRubs) % totalRubs
+
+        return (0..<quranRevisionPlan.dailyGoalRubs).map { offset in
+            let index = ((startIndex + offset) % totalRubs) + 1
+            return QuranRubReference(globalRubIndex: index)
+        }
+    }
+
+    func quranRevisionAssignments(days: Int) -> [QuranDailyAssignment] {
+        guard days >= 0 else { return [] }
+        let calendar = Calendar.current
+        let today = dateKey(Date())
+
+        return (0...days).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: offset, to: today) else { return nil }
+            return QuranDailyAssignment(date: date, rubs: quranRevisionAssignment(for: date))
+        }
     }
 
     func completion(for category: TaskCategory) -> Double {
@@ -440,7 +679,7 @@ final class TaskStore: ObservableObject {
                         categories[categoryIndex].subCategories = subCategories
 
                         if isToday {
-                            handleCompletionChange(task: task, wasCompleted: wasCompleted)
+                            handleCompletionChange(task: task, wasCompleted: wasCompleted, isNowCompleted: !wasCompleted)
                         } else {
                             recordProgressSnapshot(for: dayKey)
                             saveData()
@@ -461,7 +700,7 @@ final class TaskStore: ObservableObject {
                     categories[categoryIndex].tasks = tasks
 
                     if isToday {
-                        handleCompletionChange(task: task, wasCompleted: wasCompleted)
+                        handleCompletionChange(task: task, wasCompleted: wasCompleted, isNowCompleted: !wasCompleted)
                     } else {
                         recordProgressSnapshot(for: dayKey)
                         saveData()
@@ -554,13 +793,13 @@ final class TaskStore: ObservableObject {
         }
     }
 
-    private func handleCompletionChange(task: Task, wasCompleted: Bool) {
-        if !wasCompleted && task.isCompleted {
-            totalXP += task.score
+    private func handleCompletionChange(task: Task, wasCompleted: Bool, isNowCompleted: Bool) {
+        if !wasCompleted && isNowCompleted {
+            grantXP(task.score)
             updateLevel()
             updateStreakOnCompletion()
             checkBadges()
-        } else if wasCompleted && !task.isCompleted {
+        } else if wasCompleted && !isNowCompleted {
             totalXP = max(0, totalXP - task.score)
             updateLevel()
         }
@@ -623,6 +862,12 @@ final class TaskStore: ObservableObject {
         badges.append(badge)
     }
 
+    private func grantXP(_ amount: Int) {
+        guard amount > 0 else { return }
+        totalXP += amount
+        updateLevel()
+    }
+
     func recordProgressSnapshot(for date: Date) {
         let dayKey = dateKey(date)
         let value = completion(for: categories, on: dayKey)
@@ -672,6 +917,83 @@ final class TaskStore: ObservableObject {
             return Calendar.current.component(.weekday, from: date) == 6
         }
         return true
+    }
+
+    private func updateCompensationStreak(on date: Date) {
+        let dayKey = dateKey(date)
+
+        if let lastDate = compensationProgress.lastActivityDate {
+            if Calendar.current.isDate(lastDate, inSameDayAs: dayKey) {
+                return
+            }
+
+            let expectedPreviousDay = Calendar.current.date(byAdding: .day, value: -1, to: dayKey)
+            if let expectedPreviousDay,
+               Calendar.current.isDate(lastDate, inSameDayAs: expectedPreviousDay) {
+                compensationProgress.streak += 1
+            } else {
+                compensationProgress.streak = 1
+            }
+        } else {
+            compensationProgress.streak = 1
+        }
+
+        compensationProgress.lastActivityDate = dayKey
+    }
+
+    private func updateQuranRevisionStreak(on date: Date) {
+        let dayKey = dateKey(date)
+
+        if let lastDate = quranRevisionPlan.lastCompletionDate {
+            if Calendar.current.isDate(lastDate, inSameDayAs: dayKey) {
+                return
+            }
+
+            let expectedPreviousDay = Calendar.current.date(byAdding: .day, value: -1, to: dayKey)
+            if let expectedPreviousDay,
+               Calendar.current.isDate(lastDate, inSameDayAs: expectedPreviousDay) {
+                quranRevisionPlan.streak += 1
+            } else {
+                quranRevisionPlan.streak = 1
+            }
+        } else {
+            quranRevisionPlan.streak = 1
+        }
+
+        quranRevisionPlan.lastCompletionDate = dayKey
+    }
+
+    private func awardCompensationBadgesIfNeeded() {
+        if compensationProgress.streak == 7 {
+            addBadge("ثبات القضاء ٧ أيام")
+        }
+        if totalCompensatedDebtUnits >= 25 {
+            addBadge("منجز ٢٥ قضاء")
+        }
+        if totalCompensationDebtUnits > 0 && compensationCompletionRate >= 0.5 {
+            addBadge("منتصف طريق القضاء")
+        }
+        if totalCompensationDebtUnits > 0 && totalCompensatedDebtUnits == totalCompensationDebtUnits {
+            addBadge("إبراء كامل لما فات")
+        }
+    }
+
+    private func awardQuranRevisionBadgesIfNeeded() {
+        if quranRevisionPlan.streak == 7 {
+            addBadge("مراجعة ٧ أيام")
+        }
+        if quranRevisionPlan.streak == 30 {
+            addBadge("مراجعة ٣٠ يومًا")
+        }
+        let reviewedRubs = quranRevisionPlan.completedDates.count * quranRevisionPlan.dailyGoalRubs
+        if reviewedRubs >= 40 {
+            addBadge("همة في المراجعة")
+        }
+        if quranRevisionPlan.totalMemorizedRubs > 0,
+           reviewedRubs > 0,
+           reviewedRubs % quranRevisionPlan.totalMemorizedRubs == 0 {
+            addBadge("ختم دورة مراجعة")
+        }
     }
 
     func schedulePrayerNotifications(timings: PrayerTimings) {
