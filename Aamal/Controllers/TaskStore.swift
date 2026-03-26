@@ -66,6 +66,7 @@ final class TaskStore: ObservableObject {
     private let userDefaults = UserDefaults.standard
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
+    private var latestPrayerTimings: PrayerTimings?
 
     private enum Keys {
         static let totalXP = "totalXP"
@@ -699,6 +700,7 @@ final class TaskStore: ObservableObject {
         completedLog[taskId] = nil
         recordProgressSnapshot(for: Date())
         saveData()
+        refreshContextualNotifications()
     }
 
     @discardableResult
@@ -730,6 +732,7 @@ final class TaskStore: ObservableObject {
                             recordProgressSnapshot(for: dayKey)
                             saveData()
                         }
+                        refreshContextualNotifications()
                         return true
                     }
                 }
@@ -753,6 +756,7 @@ final class TaskStore: ObservableObject {
                         recordProgressSnapshot(for: dayKey)
                         saveData()
                     }
+                    refreshContextualNotifications()
                     return true
                 }
             }
@@ -983,38 +987,57 @@ final class TaskStore: ObservableObject {
     }
 
     func schedulePrayerNotifications(timings: PrayerTimings) {
+        latestPrayerTimings = timings
         let center = UNUserNotificationCenter.current()
         center.requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
             guard granted else { return }
 
             center.removePendingNotificationRequests(withIdentifiers: self.notificationIdentifiers())
 
+            let today = Date()
             for slot in timings.slots() {
-                let prayerTasks = self.tasks(forPrayerName: slot.arabicName)
-                let taskNames = prayerTasks.map { $0.name }.joined(separator: "، ")
-                let prayerBody = taskNames.isEmpty ? "حان وقت الصلاة" : "مهام الصلاة: \(taskNames)"
-
-                self.scheduleNotification(
-                    id: "prayer_\(slot.apiKey)",
-                    title: "\(slot.arabicName)",
-                    body: prayerBody,
-                    date: slot.date
-                )
-
-                if let wuduTime = Calendar.current.date(byAdding: .minute, value: -10, to: slot.date) {
-                    let wuduTaskNames = self.wuduTasks().map { $0.name }.joined(separator: "، ")
-                    let wuduBody = wuduTaskNames.isEmpty ? "تذكير بالوضوء" : "تذكير: \(wuduTaskNames)"
+                let prayerTasks = self.pendingTasks(forPrayerName: slot.arabicName, on: today)
+                if !prayerTasks.isEmpty {
+                    let prayerBody = self.notificationBody(for: prayerTasks, prefix: "تبقى لك")
 
                     self.scheduleNotification(
-                        id: "wudu_\(slot.apiKey)",
-                        title: "تذكير الوضوء قبل \(slot.arabicName)",
-                        body: wuduBody,
-                        date: wuduTime
+                        id: "prayer_\(slot.apiKey)",
+                        title: "مهام \(slot.arabicName)",
+                        body: prayerBody,
+                        date: slot.date
                     )
+                }
+
+                if let wuduTime = Calendar.current.date(byAdding: .minute, value: -10, to: slot.date) {
+                    let pendingWuduTasks = self.wuduTasks().filter { !self.isTaskCompleted($0, on: today) }
+                    if !pendingWuduTasks.isEmpty {
+                        let wuduBody = self.notificationBody(for: pendingWuduTasks, prefix: "قبل \(slot.arabicName)")
+
+                        self.scheduleNotification(
+                            id: "wudu_\(slot.apiKey)",
+                            title: "تذكير الوضوء",
+                            body: wuduBody,
+                            date: wuduTime
+                        )
+                    }
                 }
             }
 
+            for reminder in self.timeBlockReminders(for: timings, on: today) {
+                self.scheduleNotification(
+                    id: reminder.id,
+                    title: reminder.title,
+                    body: reminder.body,
+                    date: reminder.date
+                )
+            }
+
         }
+    }
+
+    func refreshContextualNotifications() {
+        guard let latestPrayerTimings else { return }
+        schedulePrayerNotifications(timings: latestPrayerTimings)
     }
 
     private func scheduleNotification(id: String, title: String, body: String, date: Date) {
@@ -1034,7 +1057,8 @@ final class TaskStore: ObservableObject {
 
     private func notificationIdentifiers() -> [String] {
         ["prayer_Fajr", "prayer_Dhuhr", "prayer_Asr", "prayer_Maghrib", "prayer_Isha",
-            "wudu_Fajr", "wudu_Dhuhr", "wudu_Asr", "wudu_Maghrib", "wudu_Isha"]
+            "wudu_Fajr", "wudu_Dhuhr", "wudu_Asr", "wudu_Maghrib", "wudu_Isha",
+            "block_morning", "block_midday", "block_evening"]
     }
 
     private func tasksForCategory(_ category: TaskCategory) -> [Task] {
@@ -1078,6 +1102,7 @@ final class TaskStore: ObservableObject {
         // Ensure persistence and update snapshots
         recordProgressSnapshot(for: Date())
         saveData()
+        refreshContextualNotifications()
     }
 
     private func dateKey(_ date: Date) -> Date {
@@ -1103,4 +1128,73 @@ final class TaskStore: ObservableObject {
         }
         completedLog[taskId] = entries.isEmpty ? nil : entries
     }
+
+    private func pendingTasks(forPrayerName prayerName: String, on date: Date) -> [Task] {
+        tasks(forPrayerName: prayerName).filter { !isTaskCompleted($0, on: date) }
+    }
+
+    private func pendingTasks(forCategories categoryNames: [String], on date: Date) -> [Task] {
+        allTasks.filter { task in
+            categoryNames.contains(task.category) &&
+            isTaskActive(task, on: date) &&
+            !isTaskCompleted(task, on: date)
+        }
+    }
+
+    private func notificationBody(for tasks: [Task], prefix: String) -> String {
+        let preview = tasks.prefix(3).map(\ .name)
+        let extraCount = max(0, tasks.count - preview.count)
+        let names = preview.joined(separator: "، ")
+
+        if extraCount > 0 {
+            return "\(prefix) \(tasks.count) مهام: \(names) و\(extraCount) أخرى."
+        }
+
+        return "\(prefix) \(tasks.count) مهام: \(names)."
+    }
+
+    private func timeBlockReminders(for timings: PrayerTimings, on date: Date) -> [ContextualReminderPlan] {
+        let calendar = Calendar.current
+        let plans: [ContextualReminderPlan?] = [
+            calendar.date(byAdding: .minute, value: 35, to: timings.fajr).flatMap { reminderDate in
+                let tasks = pendingTasks(forCategories: ["مهام الصباح"], on: date)
+                guard !tasks.isEmpty else { return nil }
+                return ContextualReminderPlan(
+                    id: "block_morning",
+                    title: "دفعة الصباح",
+                    body: notificationBody(for: tasks, prefix: "ما زالت أمامك"),
+                    date: reminderDate
+                )
+            },
+            calendar.date(byAdding: .minute, value: 75, to: timings.dhuhr).flatMap { reminderDate in
+                let tasks = pendingTasks(forCategories: ["مهام القرآن", "مهام الدعاء", "مهام السلوك", "مهام حقوق العباد"], on: date)
+                guard !tasks.isEmpty else { return nil }
+                return ContextualReminderPlan(
+                    id: "block_midday",
+                    title: "الورد اليومي",
+                    body: notificationBody(for: tasks, prefix: "تبقى في هذا الوقت"),
+                    date: reminderDate
+                )
+            },
+            calendar.date(byAdding: .minute, value: 25, to: timings.maghrib).flatMap { reminderDate in
+                let tasks = pendingTasks(forCategories: ["مهام المساء"], on: date)
+                guard !tasks.isEmpty else { return nil }
+                return ContextualReminderPlan(
+                    id: "block_evening",
+                    title: "دفعة المساء",
+                    body: notificationBody(for: tasks, prefix: "لا تنسَ"),
+                    date: reminderDate
+                )
+            }
+        ]
+
+        return plans.compactMap { $0 }
+    }
+}
+
+private struct ContextualReminderPlan {
+    let id: String
+    let title: String
+    let body: String
+    let date: Date
 }
