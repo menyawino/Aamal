@@ -9,6 +9,8 @@ struct DailyTasksView: View {
     @State private var selectedCategoryName: String = ""
     @State private var customCategoryName: String = ""
     @State private var searchText: String = ""
+    @State private var actionFeedback: TaskActionFeedback?
+    @State private var feedbackDismissWorkItem: DispatchWorkItem?
 
     private var isSelectedDateToday: Bool {
         Calendar.current.isDateInToday(selectedDate)
@@ -115,6 +117,20 @@ struct DailyTasksView: View {
                         Text("\(Int(selectedDateCompletion * 100))% مكتمل")
                             .font(.caption)
                             .foregroundColor(.secondary)
+
+                        HStack(spacing: 10) {
+                            SummaryPill(
+                                title: "المتبقي",
+                                value: "\(max(0, selectedDateTotalTasks - selectedDateCompletedTasks))",
+                                tint: AamalTheme.gold
+                            )
+
+                            SummaryPill(
+                                title: "المسجل",
+                                value: "\(selectedDateCompletedTasks)",
+                                tint: AamalTheme.emerald
+                            )
+                        }
                     }
                     .aamalCard()
 
@@ -127,12 +143,29 @@ struct DailyTasksView: View {
                             .aamalCard()
                     } else {
                         ForEach(filteredCategories, id: \.name) { category in
-                            CategorySectionView(category: category, store: store, date: selectedDate)
+                            CategorySectionView(
+                                category: category,
+                                store: store,
+                                date: selectedDate,
+                                onTaskAction: presentFeedback
+                            )
                         }
                     }
                 }
                 .padding(.horizontal)
                 .padding(.bottom, 24)
+            }
+            .safeAreaInset(edge: .bottom) {
+                if let actionFeedback {
+                    TaskActionBanner(
+                        feedback: actionFeedback,
+                        undoAction: { undo(feedback: actionFeedback) },
+                        dismissAction: dismissFeedback
+                    )
+                    .padding(.horizontal)
+                    .padding(.top, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -233,12 +266,48 @@ struct DailyTasksView: View {
         selectedCategoryName = store.categories.first?.name ?? ""
         customCategoryName = ""
     }
+
+    private func presentFeedback(_ feedback: TaskActionFeedback) {
+        feedbackDismissWorkItem?.cancel()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+            actionFeedback = feedback
+        }
+
+        let workItem = DispatchWorkItem {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                actionFeedback = nil
+            }
+        }
+        feedbackDismissWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: workItem)
+    }
+
+    private func dismissFeedback() {
+        feedbackDismissWorkItem?.cancel()
+        withAnimation(.easeInOut(duration: 0.2)) {
+            actionFeedback = nil
+        }
+    }
+
+    private func undo(feedback: TaskActionFeedback) {
+        feedbackDismissWorkItem?.cancel()
+        withAnimation(.easeInOut(duration: 0.18)) {
+            switch feedback.kind {
+            case .logged:
+                store.unlogTask(taskId: feedback.task.id, on: feedback.date)
+            case .unlogged:
+                store.toggleTask(taskId: feedback.task.id, on: feedback.date)
+            }
+            actionFeedback = nil
+        }
+    }
 }
 
 private struct CategorySectionView: View {
     let category: TaskCategory
     @ObservedObject var store: TaskStore
     let date: Date
+    let onTaskAction: (TaskActionFeedback) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -248,28 +317,105 @@ private struct CategorySectionView: View {
             if let subCategories = category.subCategories {
                 ForEach(subCategories, id: \.name) { subCategory in
                     if subCategory.tasks.allSatisfy({ store.isPrayerTask($0) }) {
-                        PrayerCompactGroupList(tasks: subCategory.tasks, store: store, date: date)
+                        PrayerCompactGroupList(
+                            tasks: subCategory.tasks,
+                            store: store,
+                            date: date,
+                            onTaskAction: onTaskAction
+                        )
                     } else {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(subCategory.name)
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-
-                            ForEach(subCategory.tasks) { task in
-                                TaskRow(task: task, store: store, date: date)
-                            }
-                        }
+                        TaskGroupSection(
+                            title: subCategory.name,
+                            tasks: subCategory.tasks,
+                            store: store,
+                            date: date,
+                            onTaskAction: onTaskAction
+                        )
                     }
                 }
             }
 
             if let tasks = category.tasks {
-                ForEach(tasks) { task in
-                    TaskRow(task: task, store: store, date: date)
-                }
+                TaskGroupSection(tasks: tasks, store: store, date: date, onTaskAction: onTaskAction)
             }
         }
         .aamalCard()
+    }
+}
+
+private struct TaskGroupSection: View {
+    let title: String?
+    let tasks: [Task]
+    @ObservedObject var store: TaskStore
+    let date: Date
+    let onTaskAction: (TaskActionFeedback) -> Void
+    @State private var showCompletedTasks = false
+
+    init(title: String? = nil, tasks: [Task], store: TaskStore, date: Date, onTaskAction: @escaping (TaskActionFeedback) -> Void) {
+        self.title = title
+        self.tasks = tasks
+        self.store = store
+        self.date = date
+        self.onTaskAction = onTaskAction
+    }
+
+    private var activeTasks: [Task] {
+        tasks.filter { !store.isTaskCompleted($0, on: date) }
+    }
+
+    private var completedTasks: [Task] {
+        tasks.filter { store.isTaskCompleted($0, on: date) }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let title {
+                HStack {
+                    Text(title)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+
+                    Spacer()
+
+                    if !completedTasks.isEmpty {
+                        Text("\(completedTasks.count) مسجلة")
+                            .font(.caption2)
+                            .foregroundColor(AamalTheme.emerald)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(AamalTheme.emerald.opacity(0.12))
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+
+            if activeTasks.isEmpty {
+                Text("تم تسجيل كل المهام")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 2)
+            } else {
+                ForEach(activeTasks) { task in
+                    TaskRow(task: task, store: store, date: date, onTaskAction: onTaskAction)
+                        .transition(.asymmetric(
+                            insertion: .scale(scale: 0.96).combined(with: .opacity),
+                            removal: .scale(scale: 0.88).combined(with: .opacity)
+                        ))
+                }
+            }
+
+            if !completedTasks.isEmpty {
+                CompletedTasksDisclosure(
+                    tasks: completedTasks,
+                    isExpanded: $showCompletedTasks,
+                    store: store,
+                    date: date,
+                    onTaskAction: onTaskAction
+                )
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: activeTasks.map(\ .id))
+        .animation(.easeInOut(duration: 0.18), value: completedTasks.map(\ .id))
     }
 }
 
@@ -277,6 +423,7 @@ private struct PrayerCompactGroupList: View {
     let tasks: [Task]
     @ObservedObject var store: TaskStore
     let date: Date
+    let onTaskAction: (TaskActionFeedback) -> Void
 
     private var grouped: [String: [Task]] {
         Dictionary(grouping: tasks, by: { $0.category })
@@ -289,7 +436,13 @@ private struct PrayerCompactGroupList: View {
                 .foregroundColor(.secondary)
 
             ForEach(grouped.keys.sorted(), id: \.self) { prayer in
-                PrayerTinyGroupRow(prayerName: prayer, tasks: grouped[prayer] ?? [], store: store, date: date)
+                PrayerTinyGroupRow(
+                    prayerName: prayer,
+                    tasks: grouped[prayer] ?? [],
+                    store: store,
+                    date: date,
+                    onTaskAction: onTaskAction
+                )
             }
         }
     }
@@ -300,14 +453,25 @@ private struct PrayerTinyGroupRow: View {
     let tasks: [Task]
     @ObservedObject var store: TaskStore
     let date: Date
+    let onTaskAction: (TaskActionFeedback) -> Void
     @State private var isExpanded = false
+    @State private var showCompletedTasks = false
 
     private var remainingCount: Int {
         tasks.filter { !store.isTaskCompleted($0, on: date) }.count
     }
 
+    private var activeTasks: [Task] {
+        tasks.filter { !store.isTaskCompleted($0, on: date) }
+    }
+
+    private var completedTasks: [Task] {
+        tasks.filter { store.isTaskCompleted($0, on: date) }
+    }
+
     private var previewTasks: [Task] {
-        isExpanded ? tasks : Array(tasks.prefix(2))
+        let source = activeTasks
+        return isExpanded ? source : Array(source.prefix(2))
     }
 
     var body: some View {
@@ -326,18 +490,29 @@ private struct PrayerTinyGroupRow: View {
                     .foregroundColor(.secondary)
             }
 
-            ForEach(previewTasks) { task in
-                TaskRow(task: task, store: store, date: date)
+            if previewTasks.isEmpty {
+                Text("تم تسجيل مهام هذه الصلاة")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(.vertical, 2)
+            } else {
+                ForEach(previewTasks) { task in
+                    TaskRow(task: task, store: store, date: date, onTaskAction: onTaskAction)
+                        .transition(.asymmetric(
+                            insertion: .scale(scale: 0.96).combined(with: .opacity),
+                            removal: .scale(scale: 0.88).combined(with: .opacity)
+                        ))
+                }
             }
 
-            if tasks.count > previewTasks.count {
+            if activeTasks.count > previewTasks.count {
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         isExpanded.toggle()
                     }
                 }) {
                     HStack(spacing: 4) {
-                        Text(isExpanded ? "عرض أقل" : "+\(tasks.count - previewTasks.count) مهام أخرى")
+                        Text(isExpanded ? "عرض أقل" : "+\(activeTasks.count - previewTasks.count) مهام أخرى")
                             .font(.caption2)
                         Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                             .font(.caption2)
@@ -345,7 +520,7 @@ private struct PrayerTinyGroupRow: View {
                     .foregroundColor(.secondary)
                 }
                 .buttonStyle(.plain)
-            } else if tasks.count > 2 {
+            } else if activeTasks.count > 2 {
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         isExpanded.toggle()
@@ -361,6 +536,16 @@ private struct PrayerTinyGroupRow: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            if !completedTasks.isEmpty {
+                CompletedTasksDisclosure(
+                    tasks: completedTasks,
+                    isExpanded: $showCompletedTasks,
+                    store: store,
+                    date: date,
+                    onTaskAction: onTaskAction
+                )
+            }
         }
         .padding(10)
         .background(
@@ -371,6 +556,44 @@ private struct PrayerTinyGroupRow: View {
                         .stroke(AamalTheme.gold.opacity(0.12), lineWidth: 1)
                 )
         )
+        .animation(.easeInOut(duration: 0.18), value: activeTasks.map(\ .id))
+        .animation(.easeInOut(duration: 0.18), value: completedTasks.map(\ .id))
+    }
+}
+
+private struct CompletedTasksDisclosure: View {
+    let tasks: [Task]
+    @Binding var isExpanded: Bool
+    @ObservedObject var store: TaskStore
+    let date: Date
+    let onTaskAction: (TaskActionFeedback) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isExpanded.toggle()
+                }
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: isExpanded ? "chevron.up.circle.fill" : "checkmark.circle")
+                        .foregroundColor(AamalTheme.emerald)
+                    Text(isExpanded ? "إخفاء المسجلة" : "عرض المسجلة (\(tasks.count))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(spacing: 6) {
+                    ForEach(tasks) { task in
+                        CompletedTaskRow(task: task, store: store, date: date, onTaskAction: onTaskAction)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -378,6 +601,8 @@ private struct TaskRow: View {
     let task: Task
     @ObservedObject var store: TaskStore
     let date: Date
+    let onTaskAction: (TaskActionFeedback) -> Void
+    @State private var showDeleteConfirmation = false
 
     var body: some View {
         let isCompleted = store.isTaskCompleted(task, on: date)
@@ -397,7 +622,10 @@ private struct TaskRow: View {
 
             if isCompleted {
                 Button(action: {
-                    store.toggleTask(taskId: task.id, on: date)
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        store.toggleTask(taskId: task.id, on: date)
+                        onTaskAction(.init(task: task, date: date, kind: .unlogged))
+                    }
                 }) {
                     Text("تم")
                         .font(.subheadline)
@@ -407,7 +635,10 @@ private struct TaskRow: View {
                 .buttonStyle(BorderedButtonStyle())
 
                 Button(action: {
-                    store.unlogTask(taskId: task.id, on: date)
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        store.unlogTask(taskId: task.id, on: date)
+                        onTaskAction(.init(task: task, date: date, kind: .unlogged))
+                    }
                 }) {
                     Text("إلغاء التسجيل")
                         .font(.subheadline)
@@ -417,7 +648,10 @@ private struct TaskRow: View {
                 .buttonStyle(.bordered)
             } else {
                 Button(action: {
-                    store.toggleTask(taskId: task.id, on: date)
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        store.toggleTask(taskId: task.id, on: date)
+                        onTaskAction(.init(task: task, date: date, kind: .logged))
+                    }
                 }) {
                     Text("سجل")
                         .font(.subheadline)
@@ -427,7 +661,202 @@ private struct TaskRow: View {
                 .buttonStyle(BorderedProminentButtonStyle())
                 .tint(AamalTheme.emerald)
             }
+
+            Menu {
+                Button(role: .destructive) {
+                    showDeleteConfirmation = true
+                } label: {
+                    Label("حذف المهمة", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.title3)
+                    .foregroundColor(.secondary)
+            }
+            .menuStyle(.button)
         }
         .padding(.vertical, 4)
+        .confirmationDialog(
+            "حذف المهمة",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("حذف نهائيًا", role: .destructive) {
+                store.removeTask(taskId: task.id)
+            }
+            Button("إلغاء", role: .cancel) {}
+        } message: {
+            Text("سيتم حذف المهمة من جميع القوائم والتسجيلات المحفوظة.")
+        }
+    }
+}
+
+private struct CompletedTaskRow: View {
+    let task: Task
+    @ObservedObject var store: TaskStore
+    let date: Date
+    let onTaskAction: (TaskActionFeedback) -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(AamalTheme.emerald)
+                .font(.caption)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(task.name)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                Text("+\(task.score) نقطة")
+                    .font(.caption2)
+                    .foregroundColor(.secondary.opacity(0.75))
+            }
+
+            Spacer()
+
+            Button(action: {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    store.unlogTask(taskId: task.id, on: date)
+                    onTaskAction(.init(task: task, date: date, kind: .unlogged))
+                }
+            }) {
+                Text("تراجع")
+                    .font(.caption)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+            }
+            .buttonStyle(.bordered)
+            .tint(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(AamalTheme.emerald.opacity(0.08))
+        )
+    }
+}
+
+private struct SummaryPill: View {
+    let title: String
+    let value: String
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(tint)
+                .frame(width: 8, height: 8)
+
+            Text(title)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Spacer(minLength: 6)
+
+            Text(value)
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(.primary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(tint.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct TaskActionBanner: View {
+    let feedback: TaskActionFeedback
+    let undoAction: () -> Void
+    let dismissAction: () -> Void
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: feedback.kind.symbolName)
+                .font(.headline)
+                .foregroundColor(feedback.kind.tint)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(feedback.kind.title)
+                    .font(.subheadline.weight(.semibold))
+                Text(feedback.message)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 8)
+
+            Button("تراجع", action: undoAction)
+                .buttonStyle(.borderedProminent)
+                .tint(feedback.kind.tint)
+                .controlSize(.small)
+
+            Button(action: dismissAction) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundColor(.secondary)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(.ultraThinMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18)
+                        .stroke(feedback.kind.tint.opacity(0.16), lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.1), radius: 16, x: 0, y: 6)
+        )
+    }
+}
+
+private struct TaskActionFeedback: Identifiable {
+    enum Kind {
+        case logged
+        case unlogged
+
+        var title: String {
+            switch self {
+            case .logged:
+                return "تم تسجيل المهمة"
+            case .unlogged:
+                return "تم التراجع"
+            }
+        }
+
+        var symbolName: String {
+            switch self {
+            case .logged:
+                return "checkmark.circle.fill"
+            case .unlogged:
+                return "arrow.uturn.backward.circle.fill"
+            }
+        }
+
+        var tint: Color {
+            switch self {
+            case .logged:
+                return AamalTheme.emerald
+            case .unlogged:
+                return AamalTheme.gold
+            }
+        }
+    }
+
+    let id = UUID()
+    let task: Task
+    let date: Date
+    let kind: Kind
+
+    var message: String {
+        switch kind {
+        case .logged:
+            return "\(task.name) أصبحت ضمن المهام المسجلة ويمكن التراجع فورًا."
+        case .unlogged:
+            return "أزلنا \(task.name) من المسجلة، ويمكنك إعادتها بضغطة واحدة."
+        }
     }
 }

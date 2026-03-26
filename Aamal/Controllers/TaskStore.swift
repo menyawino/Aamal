@@ -465,10 +465,10 @@ final class TaskStore: ObservableObject {
         let totalRubs = quranRevisionPlan.totalMemorizedRubs
         guard totalRubs > 0 else { return [] }
 
-        let startDate = dateKey(quranRevisionPlan.startDate)
-        let day = dateKey(date)
-        let elapsedDays = max(0, Calendar.current.dateComponents([.day], from: startDate, to: day).day ?? 0)
-        let startIndex = (elapsedDays * quranRevisionPlan.dailyGoalRubs) % totalRubs
+        let dayKey = dateKey(date)
+        let completedCycleCount = quranRevisionPlan.completedDates.filter { $0 <= dayKey }.count
+        let completedCycleOffset = completedCycleCount * quranRevisionPlan.dailyGoalRubs
+        let startIndex = completedCycleOffset % totalRubs
 
         return (0..<quranRevisionPlan.dailyGoalRubs).map { offset in
             let index = ((startIndex + offset) % totalRubs) + 1

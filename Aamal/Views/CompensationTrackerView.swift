@@ -8,6 +8,7 @@ struct CompensationTrackerView: View {
     @State private var prayerLogCount: Int = 1
     @State private var fastingLogCount: Int = 1
     @State private var feedbackMessage: String = ""
+    @State private var showSettingsSheet = false
 
     init(store: TaskStore) {
         self.store = store
@@ -31,10 +32,9 @@ struct CompensationTrackerView: View {
                             .aamalCard()
                     }
 
-                    CompensationTargetEditorCard(
-                        prayerTargets: $prayerTargets,
-                        fastingDays: $fastingDays,
-                        saveAction: saveTargets
+                    CompensationSettingsLauncherCard(
+                        store: store,
+                        openSettingsAction: { showSettingsSheet = true }
                     )
 
                     CompensationQuickLogCard(
@@ -53,10 +53,44 @@ struct CompensationTrackerView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 24)
             }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showSettingsSheet = true }) {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .accessibilityLabel("إعدادات القضاء")
+                }
+            }
             .background(AamalTheme.backgroundGradient.ignoresSafeArea())
             .navigationTitle("القضاء")
         }
         .onAppear(perform: syncDraft)
+        .sheet(isPresented: $showSettingsSheet) {
+            NavigationStack {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        CompensationTargetEditorCard(
+                            prayerTargets: $prayerTargets,
+                            fastingDays: $fastingDays,
+                            saveAction: saveTargets
+                        )
+                    }
+                    .padding()
+                }
+                .background(AamalTheme.backgroundGradient.ignoresSafeArea())
+                .navigationTitle("إعدادات القضاء")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("إغلاق") {
+                            syncDraft()
+                            showSettingsSheet = false
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 
     private func syncDraft() {
@@ -74,6 +108,7 @@ struct CompensationTrackerView: View {
             feedbackMessage = "تم تحديث رصيد القضاء والمتابعة مستمرة."
         }
         syncDraft()
+        showSettingsSheet = false
     }
 
     private func logPrayerCompensation() {
@@ -161,6 +196,45 @@ private struct CompensationMetricPill: View {
     }
 }
 
+private struct CompensationSettingsLauncherCard: View {
+    @ObservedObject var store: TaskStore
+    let openSettingsAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("إعدادات الرصيد")
+                        .font(.headline)
+                    Text(summaryText)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button(action: openSettingsAction) {
+                    Label("تعديل", systemImage: "slider.horizontal.3")
+                }
+                .buttonStyle(.bordered)
+                .tint(AamalTheme.gold)
+            }
+
+            HStack {
+                CompensationMetricPill(title: "الرصيد الكلي", value: "\(store.totalCompensationDebtUnits)")
+                CompensationMetricPill(title: "المتبقي", value: "\(store.totalCompensationDebtUnits - store.totalCompensatedDebtUnits)")
+                CompensationMetricPill(title: "سلسلة القضاء", value: "\(store.compensationProgress.streak)")
+            }
+        }
+        .aamalCardSolid()
+    }
+
+    private var summaryText: String {
+        if store.totalCompensationDebtUnits == 0 {
+            return "أدخل رصيد الصلوات وأيام الصيام مرة واحدة، ثم عدله لاحقًا من الإعدادات."
+        }
+        return "تعديل رصيد الصلوات وأيام الصيام أصبح من الإعدادات حتى تبقى الصفحة أخف."
+    }
+}
+
 private struct CompensationTargetEditorCard: View {
     @Binding var prayerTargets: [PrayerCompensationType: Int]
     @Binding var fastingDays: Int
@@ -171,12 +245,16 @@ private struct CompensationTargetEditorCard: View {
             Text("رصيد ما فاتك")
                 .font(.headline)
 
+            Text("عدّل العدد متى احتجت، ثم احفظ ليعود ملخص الصفحة بشكل مضغوط.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
             ForEach(PrayerCompensationType.allCases) { prayer in
                 NumericStepperRow(
                     title: prayer.arabicName,
                     systemImage: prayer.systemImage,
                     value: binding(for: prayer),
-                    range: 0...500
+                    range: 0...5000
                 )
             }
 
@@ -184,7 +262,7 @@ private struct CompensationTargetEditorCard: View {
                 title: "أيام الصيام",
                 systemImage: "calendar",
                 value: $fastingDays,
-                range: 0...120
+                range: 0...5000
             )
 
             Button(action: saveAction) {
@@ -277,7 +355,7 @@ private struct NumericStepperRow: View {
                 TextField("0", value: clampedBinding, format: .number)
                     .keyboardType(.numberPad)
                     .multilineTextAlignment(.center)
-                    .frame(width: 72)
+                    .frame(width: 88)
                     .padding(.vertical, 8)
                     .padding(.horizontal, 6)
                     .background(AamalTheme.emerald.opacity(0.08))

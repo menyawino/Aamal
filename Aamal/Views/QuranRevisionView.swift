@@ -7,6 +7,7 @@ struct QuranRevisionView: View {
     @State private var additionalRub: Int
     @State private var dailyGoalRubs: Int
     @State private var feedbackMessage: String = ""
+    @State private var showSettingsSheet = false
 
     init(store: TaskStore) {
         self.store = store
@@ -39,13 +40,9 @@ struct QuranRevisionView: View {
                             .aamalCard()
                     }
 
-                    QuranPlanEditorCard(
-                        juzCount: $juzCount,
-                        additionalHizb: $additionalHizb,
-                        additionalRub: $additionalRub,
-                        dailyGoalRubs: $dailyGoalRubs,
-                        totalDraftRubs: totalDraftRubs,
-                        saveAction: savePlan
+                    QuranPlanSummaryCard(
+                        store: store,
+                        openSettingsAction: { showSettingsSheet = true }
                     )
 
                     QuranTodayMissionCard(
@@ -58,10 +55,47 @@ struct QuranRevisionView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 24)
             }
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button(action: { showSettingsSheet = true }) {
+                        Image(systemName: "slider.horizontal.3")
+                    }
+                    .accessibilityLabel("إعدادات المراجعة")
+                }
+            }
             .background(AamalTheme.backgroundGradient.ignoresSafeArea())
             .navigationTitle("مراجعة القرآن")
         }
         .onAppear(perform: syncDraftFromStore)
+        .sheet(isPresented: $showSettingsSheet) {
+            NavigationStack {
+                ScrollView {
+                    VStack(spacing: 16) {
+                        QuranPlanEditorCard(
+                            juzCount: $juzCount,
+                            additionalHizb: $additionalHizb,
+                            additionalRub: $additionalRub,
+                            dailyGoalRubs: $dailyGoalRubs,
+                            totalDraftRubs: totalDraftRubs,
+                            saveAction: savePlan
+                        )
+                    }
+                    .padding()
+                }
+                .background(AamalTheme.backgroundGradient.ignoresSafeArea())
+                .navigationTitle("إعدادات المراجعة")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("إغلاق") {
+                            syncDraftFromStore()
+                            showSettingsSheet = false
+                        }
+                    }
+                }
+            }
+            .presentationDetents([.medium, .large])
+        }
     }
 
     private func syncDraftFromStore() {
@@ -86,6 +120,7 @@ struct QuranRevisionView: View {
                 : "تم ضبط خطة المراجعة اليومية على \(dailyGoalRubs) أرباع."
         }
         syncDraftFromStore()
+            showSettingsSheet = false
     }
 
     private func markTodayCompleted() {
@@ -179,6 +214,59 @@ private struct QuranMetricPill: View {
     }
 }
 
+private struct QuranPlanSummaryCard: View {
+    @ObservedObject var store: TaskStore
+    let openSettingsAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("إعدادات المحفوظ")
+                        .font(.headline)
+                    Text(summaryText)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button(action: openSettingsAction) {
+                    Label("تعديل", systemImage: "slider.horizontal.3")
+                }
+                .buttonStyle(.bordered)
+                .tint(AamalTheme.gold)
+            }
+
+            HStack {
+                QuranMetricPill(title: "المحفوظ", value: memorizedSummary)
+                QuranMetricPill(title: "الورد", value: "\(store.quranRevisionPlan.dailyGoalRubs) ربع")
+                QuranMetricPill(title: "الأيام المنجزة", value: "\(store.quranRevisionPlan.completedDates.count)")
+            }
+        }
+        .aamalCardSolid()
+    }
+
+    private var summaryText: String {
+        if store.quranRevisionPlan.totalMemorizedRubs == 0 {
+            return "حدد المحفوظ والورد اليومي من الإعدادات ليظهر توزيع المراجعة."
+        }
+        return "تم نقل إعداد المحفوظ والورد إلى الإعدادات لتبقى صفحة المراجعة مركزة على ورد اليوم."
+    }
+
+    private var memorizedSummary: String {
+        guard store.quranRevisionPlan.totalMemorizedRubs > 0 else { return "غير محدد" }
+        let juz = store.quranRevisionPlan.totalMemorizedRubs / 8
+        let remainder = store.quranRevisionPlan.totalMemorizedRubs % 8
+        let hizb = remainder / 4
+        let rub = remainder % 4
+
+        var parts: [String] = []
+        if juz > 0 { parts.append("\(juz) جزء") }
+        if hizb > 0 { parts.append("\(hizb) حزب") }
+        if rub > 0 { parts.append("\(rub) ربع") }
+        return parts.joined(separator: " + ")
+    }
+}
+
 private struct QuranPlanEditorCard: View {
     @Binding var juzCount: Int
     @Binding var additionalHizb: Int
@@ -192,23 +280,19 @@ private struct QuranPlanEditorCard: View {
             Text("إعداد خطة المراجعة")
                 .font(.headline)
 
-            Stepper(value: $juzCount, in: 0...30) {
-                row(title: "الأجزاء المحفوظة", value: "\(juzCount)")
-            }
+            Text("اضبط المحفوظ والورد من هنا، ثم ستبقى صفحة المراجعة مركزة على المهمة اليومية.")
+                .font(.caption)
+                .foregroundColor(.secondary)
 
-            Stepper(value: $additionalHizb, in: 0...maxAdditionalHizb) {
-                row(title: "الزيادة بالأحزاب", value: "\(additionalHizb)")
-            }
+            QuranNumericControlRow(title: "الأجزاء المحفوظة", value: $juzCount, range: 0...30)
+
+            QuranNumericControlRow(title: "الزيادة بالأحزاب", value: $additionalHizb, range: 0...maxAdditionalHizb)
             .disabled(juzCount == 30)
 
-            Stepper(value: $additionalRub, in: 0...maxAdditionalRub) {
-                row(title: "الزيادة بالأرباع", value: "\(additionalRub)")
-            }
+            QuranNumericControlRow(title: "الزيادة بالأرباع", value: $additionalRub, range: 0...maxAdditionalRub)
             .disabled(juzCount == 30 && additionalHizb == 0)
 
-            Stepper(value: $dailyGoalRubs, in: 1...4) {
-                row(title: "الورد اليومي", value: "\(dailyGoalRubs) ربع")
-            }
+            QuranNumericControlRow(title: "الورد اليومي", value: $dailyGoalRubs, range: 1...4, suffix: "ربع")
 
             Text("المحفوظ الحالي: \(describe(totalRubs: totalDraftRubs))")
                 .font(.caption)
@@ -246,15 +330,6 @@ private struct QuranPlanEditorCard: View {
         return 3
     }
 
-    private func row(title: String, value: String) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(value)
-                .foregroundColor(.secondary)
-        }
-    }
-
     private func describe(totalRubs: Int) -> String {
         guard totalRubs > 0 else { return "غير محدد بعد" }
         let juz = totalRubs / 8
@@ -267,6 +342,43 @@ private struct QuranPlanEditorCard: View {
         if hizb > 0 { parts.append("\(hizb) حزب") }
         if rub > 0 { parts.append("\(rub) ربع") }
         return parts.joined(separator: " + ")
+    }
+}
+
+private struct QuranNumericControlRow: View {
+    let title: String
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var suffix: String = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(title)
+                Spacer()
+                TextField("0", value: clampedBinding, format: .number)
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.center)
+                    .frame(width: 72)
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 6)
+                    .background(AamalTheme.gold.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+
+            Stepper(value: clampedBinding, in: range) {
+                Text(suffix.isEmpty ? "القيمة الحالية: \(value)" : "القيمة الحالية: \(value) \(suffix)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private var clampedBinding: Binding<Int> {
+        Binding(
+            get: { min(max(value, range.lowerBound), range.upperBound) },
+            set: { value = min(max($0, range.lowerBound), range.upperBound) }
+        )
     }
 }
 
