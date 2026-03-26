@@ -662,53 +662,18 @@ final class TaskStore: ObservableObject {
         }
     }
 
-    func toggleTask(taskId: UUID, on date: Date = Date()) {
+    @discardableResult
+    func toggleTask(taskId: UUID, on date: Date = Date()) -> Bool {
         let dayKey = dateKey(date)
-        let isToday = Calendar.current.isDateInToday(dayKey)
-        for categoryIndex in categories.indices {
-            if var subCategories = categories[categoryIndex].subCategories {
-                for subIndex in subCategories.indices {
-                    if let taskIndex = subCategories[subIndex].tasks.firstIndex(where: { $0.id == taskId }) {
-                        let task = subCategories[subIndex].tasks[taskIndex]
-                        let wasCompleted = isTaskCompleted(task, on: dayKey)
-                        setCompletion(taskId: taskId, completed: !wasCompleted, on: dayKey)
-
-                        if isToday {
-                            subCategories[subIndex].tasks[taskIndex].isCompleted = !wasCompleted
-                        }
-                        categories[categoryIndex].subCategories = subCategories
-
-                        if isToday {
-                            handleCompletionChange(task: task, wasCompleted: wasCompleted, isNowCompleted: !wasCompleted)
-                        } else {
-                            recordProgressSnapshot(for: dayKey)
-                            saveData()
-                        }
-                        return
-                    }
-                }
-            }
-
-            if var tasks = categories[categoryIndex].tasks {
-                if let taskIndex = tasks.firstIndex(where: { $0.id == taskId }) {
-                    let task = tasks[taskIndex]
-                    let wasCompleted = isTaskCompleted(task, on: dayKey)
-                    setCompletion(taskId: taskId, completed: !wasCompleted, on: dayKey)
-                    if isToday {
-                        tasks[taskIndex].isCompleted = !wasCompleted
-                    }
-                    categories[categoryIndex].tasks = tasks
-
-                    if isToday {
-                        handleCompletionChange(task: task, wasCompleted: wasCompleted, isNowCompleted: !wasCompleted)
-                    } else {
-                        recordProgressSnapshot(for: dayKey)
-                        saveData()
-                    }
-                    return
-                }
-            }
+        guard let isCompleted = completionState(taskId: taskId, on: dayKey) else {
+            return false
         }
+        return updateTaskCompletion(taskId: taskId, completed: !isCompleted, on: dayKey)
+    }
+
+    @discardableResult
+    func logTask(taskId: UUID, on date: Date = Date()) -> Bool {
+        updateTaskCompletion(taskId: taskId, completed: true, on: date)
     }
 
     func isTaskCompleted(_ task: Task, on date: Date) -> Bool {
@@ -736,61 +701,82 @@ final class TaskStore: ObservableObject {
         saveData()
     }
 
-    func unlogTask(taskId: UUID, on date: Date = Date()) {
+    @discardableResult
+    func unlogTask(taskId: UUID, on date: Date = Date()) -> Bool {
+        updateTaskCompletion(taskId: taskId, completed: false, on: date)
+    }
+
+    private func updateTaskCompletion(taskId: UUID, completed targetState: Bool, on date: Date) -> Bool {
         let dayKey = dateKey(date)
         let isToday = Calendar.current.isDateInToday(dayKey)
         for categoryIndex in categories.indices {
-            if let subCategories = categories[categoryIndex].subCategories {
-                var updated = subCategories
-                for subIndex in updated.indices {
-                    if let taskIndex = updated[subIndex].tasks.firstIndex(where: { $0.id == taskId }) {
-                        let task = updated[subIndex].tasks[taskIndex]
+            if var subCategories = categories[categoryIndex].subCategories {
+                for subIndex in subCategories.indices {
+                    if let taskIndex = subCategories[subIndex].tasks.firstIndex(where: { $0.id == taskId }) {
+                        let task = subCategories[subIndex].tasks[taskIndex]
                         let wasCompleted = isTaskCompleted(task, on: dayKey)
-                        guard wasCompleted else { return }
+                        guard wasCompleted != targetState else { return false }
 
-                        setCompletion(taskId: taskId, completed: false, on: dayKey)
+                        setCompletion(taskId: taskId, completed: targetState, on: dayKey)
 
                         if isToday {
-                            updated[subIndex].tasks[taskIndex].isCompleted = false
-                            categories[categoryIndex].subCategories = updated
-                            totalXP = max(0, totalXP - task.score)
-                            updateLevel()
-                            recordProgressSnapshot(for: dayKey)
-                            saveData()
+                            subCategories[subIndex].tasks[taskIndex].isCompleted = targetState
+                        }
+                        categories[categoryIndex].subCategories = subCategories
+
+                        if isToday {
+                            handleCompletionChange(task: task, wasCompleted: wasCompleted, isNowCompleted: targetState)
                         } else {
                             recordProgressSnapshot(for: dayKey)
                             saveData()
                         }
-                        return
+                        return true
                     }
                 }
             }
 
-            if let tasks = categories[categoryIndex].tasks,
-               tasks.contains(where: { $0.id == taskId }) {
-                var updated = tasks
-                if let taskIndex = updated.firstIndex(where: { $0.id == taskId }) {
-                    let task = updated[taskIndex]
+            if var tasks = categories[categoryIndex].tasks {
+                if let taskIndex = tasks.firstIndex(where: { $0.id == taskId }) {
+                    let task = tasks[taskIndex]
                     let wasCompleted = isTaskCompleted(task, on: dayKey)
-                    guard wasCompleted else { return }
+                    guard wasCompleted != targetState else { return false }
 
-                    setCompletion(taskId: taskId, completed: false, on: dayKey)
+                    setCompletion(taskId: taskId, completed: targetState, on: dayKey)
+                    if isToday {
+                        tasks[taskIndex].isCompleted = targetState
+                    }
+                    categories[categoryIndex].tasks = tasks
 
                     if isToday {
-                        updated[taskIndex].isCompleted = false
-                        categories[categoryIndex].tasks = updated
-                        totalXP = max(0, totalXP - task.score)
-                        updateLevel()
-                        recordProgressSnapshot(for: dayKey)
-                        saveData()
+                        handleCompletionChange(task: task, wasCompleted: wasCompleted, isNowCompleted: targetState)
                     } else {
                         recordProgressSnapshot(for: dayKey)
                         saveData()
                     }
+                    return true
                 }
-                return
             }
         }
+        return false
+    }
+
+    private func completionState(taskId: UUID, on date: Date) -> Bool? {
+        for category in categories {
+            if let subCategories = category.subCategories {
+                for subCategory in subCategories {
+                    if let task = subCategory.tasks.first(where: { $0.id == taskId }) {
+                        return isTaskCompleted(task, on: date)
+                    }
+                }
+            }
+
+            if let tasks = category.tasks,
+               let task = tasks.first(where: { $0.id == taskId }) {
+                return isTaskCompleted(task, on: date)
+            }
+        }
+
+        return nil
     }
 
     private func handleCompletionChange(task: Task, wasCompleted: Bool, isNowCompleted: Bool) {

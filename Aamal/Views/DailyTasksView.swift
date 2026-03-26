@@ -294,9 +294,9 @@ struct DailyTasksView: View {
         withAnimation(.easeInOut(duration: 0.18)) {
             switch feedback.kind {
             case .logged:
-                store.unlogTask(taskId: feedback.task.id, on: feedback.date)
+                _ = store.unlogTask(taskId: feedback.task.id, on: feedback.date)
             case .unlogged:
-                store.toggleTask(taskId: feedback.task.id, on: feedback.date)
+                _ = store.logTask(taskId: feedback.task.id, on: feedback.date)
             }
             actionFeedback = nil
         }
@@ -623,8 +623,9 @@ private struct TaskRow: View {
             if isCompleted {
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.18)) {
-                        store.toggleTask(taskId: task.id, on: date)
-                        onTaskAction(.init(task: task, date: date, kind: .unlogged))
+                        if store.unlogTask(taskId: task.id, on: date) {
+                            onTaskAction(.init(task: task, date: date, kind: .unlogged))
+                        }
                     }
                 }) {
                     Text("تم")
@@ -636,8 +637,9 @@ private struct TaskRow: View {
 
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.18)) {
-                        store.unlogTask(taskId: task.id, on: date)
-                        onTaskAction(.init(task: task, date: date, kind: .unlogged))
+                        if store.unlogTask(taskId: task.id, on: date) {
+                            onTaskAction(.init(task: task, date: date, kind: .unlogged))
+                        }
                     }
                 }) {
                     Text("إلغاء التسجيل")
@@ -649,8 +651,9 @@ private struct TaskRow: View {
             } else {
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.18)) {
-                        store.toggleTask(taskId: task.id, on: date)
-                        onTaskAction(.init(task: task, date: date, kind: .logged))
+                        if store.logTask(taskId: task.id, on: date) {
+                            onTaskAction(.init(task: task, date: date, kind: .logged))
+                        }
                     }
                 }) {
                     Text("سجل")
@@ -717,8 +720,9 @@ private struct CompletedTaskRow: View {
 
             Button(action: {
                 withAnimation(.easeInOut(duration: 0.18)) {
-                    store.unlogTask(taskId: task.id, on: date)
-                    onTaskAction(.init(task: task, date: date, kind: .unlogged))
+                    if store.unlogTask(taskId: task.id, on: date) {
+                        onTaskAction(.init(task: task, date: date, kind: .unlogged))
+                    }
                 }
             }) {
                 Text("تراجع")

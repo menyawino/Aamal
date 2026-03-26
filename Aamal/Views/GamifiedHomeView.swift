@@ -282,7 +282,7 @@ private struct QuickLogRow: View {
             }
             Spacer()
             Button(action: {
-                store.toggleTask(taskId: task.id, on: Date())
+                _ = store.logTask(taskId: task.id, on: Date())
             }) {
                 Text("سجل")
                     .font(.subheadline)
@@ -467,7 +467,7 @@ private struct PrayerTaskGroupCard: View {
                             .font(.caption)
                         Spacer()
                         Button("سجل") {
-                            store.toggleTask(taskId: task.id, on: Date())
+                            _ = store.logTask(taskId: task.id, on: Date())
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(AamalTheme.emerald)
@@ -545,7 +545,7 @@ private struct CompactTaskList: View {
                             .font(.caption)
                         Spacer()
                         Button("سجل") {
-                            store.toggleTask(taskId: task.id, on: Date())
+                            _ = store.logTask(taskId: task.id, on: Date())
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -600,7 +600,7 @@ private struct TaskRow: View {
                     )
 
                 Button(action: {
-                    store.unlogTask(taskId: task.id, on: Date())
+                    _ = store.unlogTask(taskId: task.id, on: Date())
                 }) {
                     Text("إلغاء التسجيل")
                         .font(.subheadline)
@@ -610,7 +610,7 @@ private struct TaskRow: View {
                 .buttonStyle(.bordered)
             } else {
                 Button(action: {
-                    store.toggleTask(taskId: task.id, on: Date())
+                    _ = store.logTask(taskId: task.id, on: Date())
                 }) {
                     Text("سجل")
                         .font(.subheadline)
