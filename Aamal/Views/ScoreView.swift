@@ -376,6 +376,10 @@ private struct AnalyticsCard: View {
     let bestValue: Double
     let rangeDays: Int
 
+    private var showsProgramProgress: Bool {
+        store.totalCompensationDebtUnits > 0 || store.quranRevisionPlan.totalMemorizedRubs > 0
+    }
+
     private var missedTasks: [TaskMissInsight] {
         store.mostMissedTasks(days: rangeDays, limit: 4)
     }
@@ -409,6 +413,18 @@ private struct AnalyticsCard: View {
             HStack {
                 metricMini(title: "المتوسط", value: averageValue)
                 metricMini(title: "أفضل يوم", value: bestValue)
+            }
+
+            if showsProgramProgress {
+                HStack {
+                    if store.totalCompensationDebtUnits > 0 {
+                        metricMini(title: "القضاء", value: store.compensationCompletionRate)
+                    }
+
+                    if store.quranRevisionPlan.totalMemorizedRubs > 0 {
+                        metricMini(title: "المراجعة", value: store.quranRevisionCompletionRate)
+                    }
+                }
             }
 
             VStack(alignment: .leading, spacing: 6) {

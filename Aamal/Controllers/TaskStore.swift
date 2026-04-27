@@ -47,6 +47,20 @@ struct WeekdayCompletionInsight: Identifiable {
     }
 }
 
+struct PrayerTaskTarget: Identifiable, Hashable {
+    let prayerName: String
+    let bundleName: String
+
+    var id: String { prayerName }
+}
+
+struct BundleTaskTarget: Identifiable, Hashable {
+    let categoryName: String
+    let bundleName: String
+
+    var id: String { "\(categoryName)|\(bundleName)" }
+}
+
 final class TaskStore: ObservableObject {
     @Published var categories: [TaskCategory]
     @Published private(set) var totalXP: Int = 0
@@ -62,6 +76,8 @@ final class TaskStore: ObservableObject {
     @Published private(set) var quranRevisionPlan = QuranRevisionPlan()
 
     private let xpPerLevel: Int = 20
+    private let defaultCategories: [TaskCategory]
+    private var deletedSeededTaskIDs: Set<UUID> = []
     private var lastCompletionDate: Date?
     private let userDefaults = UserDefaults.standard
     private let encoder = JSONEncoder()
@@ -69,6 +85,9 @@ final class TaskStore: ObservableObject {
     private var latestPrayerTimings: PrayerTimings?
 
     private enum Keys {
+        static let categories = "categories"
+        static let customTasks = "customTasks"
+        static let deletedSeededTaskIDs = "deletedSeededTaskIDs"
         static let totalXP = "totalXP"
         static let level = "level"
         static let streak = "streak"
@@ -84,6 +103,7 @@ final class TaskStore: ObservableObject {
     }
 
     init(categories: [TaskCategory] = [dailyCategory, fridayTasks]) {
+        self.defaultCategories = categories
         self.categories = categories
         loadData()
         removeLegacyRamadanData()
@@ -96,6 +116,39 @@ final class TaskStore: ObservableObject {
     // MARK: - Data Persistence
 
     private func loadData() {
+        if let deletedTaskIDs = userDefaults.stringArray(forKey: Keys.deletedSeededTaskIDs) {
+            deletedSeededTaskIDs = Set(deletedTaskIDs.compactMap(UUID.init(uuidString:)))
+        }
+
+        let decodedCategories: [TaskCategory]?
+        if let categoriesData = userDefaults.data(forKey: Keys.categories),
+           let decoded = try? decoder.decode([TaskCategory].self, from: categoriesData) {
+            decodedCategories = decoded
+        } else {
+            decodedCategories = nil
+        }
+
+        let decodedCustomTasks: [Task]?
+        if let customTasksData = userDefaults.data(forKey: Keys.customTasks),
+           let decoded = try? decoder.decode([Task].self, from: customTasksData) {
+            decodedCustomTasks = decoded
+        } else {
+            decodedCustomTasks = nil
+        }
+
+        let filteredDefaults = defaultCategoriesApplyingDeletions()
+
+        if let decodedCategories {
+            categories = mergeStoredCategories(decodedCategories, into: filteredDefaults)
+        } else {
+            categories = filteredDefaults
+        }
+
+        let recoveredCustomTasks = decodedCustomTasks
+            ?? decodedCategories.map { extractCustomTasks(from: $0, comparedTo: defaultCategories) }
+            ?? []
+        applyCustomTasks(recoveredCustomTasks, to: &categories)
+
         totalXP = userDefaults.integer(forKey: Keys.totalXP)
         level = userDefaults.integer(forKey: Keys.level)
         if level == 0 { level = 1 }
@@ -142,9 +195,22 @@ final class TaskStore: ObservableObject {
             quranRevisionPlan = decoded
             quranRevisionPlan.normalize()
         }
+
+        applyTodayCompletionFlags()
     }
 
     private func saveData() {
+        if let categoriesData = try? encoder.encode(categories) {
+            userDefaults.set(categoriesData, forKey: Keys.categories)
+        }
+
+        let customTasks = extractCustomTasks(from: categories, comparedTo: defaultCategories)
+        if let customTasksData = try? encoder.encode(customTasks) {
+            userDefaults.set(customTasksData, forKey: Keys.customTasks)
+        }
+
+        userDefaults.set(deletedSeededTaskIDs.map(\ .uuidString), forKey: Keys.deletedSeededTaskIDs)
+
         userDefaults.set(totalXP, forKey: Keys.totalXP)
         userDefaults.set(level, forKey: Keys.level)
         userDefaults.set(streak, forKey: Keys.streak)
@@ -240,6 +306,35 @@ final class TaskStore: ObservableObject {
 
     var todayTasbihTotal: Int {
         tasbihCounts.values.reduce(0, +)
+    }
+
+    var prayerTaskTargets: [PrayerTaskTarget] {
+        categories.flatMap { category in
+            (category.subCategories ?? []).compactMap { subCategory in
+                guard !subCategory.tasks.isEmpty,
+                      subCategory.tasks.allSatisfy(isPrayerTask),
+                      let prayerName = subCategory.tasks.first?.category
+                else {
+                    return nil
+                }
+
+                return PrayerTaskTarget(prayerName: prayerName, bundleName: subCategory.name)
+            }
+        }
+    }
+
+    var nonPrayerBundleTargets: [BundleTaskTarget] {
+        categories.flatMap { category in
+            (category.subCategories ?? []).compactMap { subCategory in
+                guard !subCategory.tasks.isEmpty,
+                      !subCategory.tasks.allSatisfy(isPrayerTask)
+                else {
+                    return nil
+                }
+
+                return BundleTaskTarget(categoryName: category.name, bundleName: subCategory.name)
+            }
+        }
     }
 
     var allTasks: [Task] {
@@ -392,7 +487,7 @@ final class TaskStore: ObservableObject {
             compensationProgress.fastingDebtDays
         )
         compensationProgress.normalize()
-        saveData()
+        recordProgressSnapshot(for: Date())
     }
 
     @discardableResult
@@ -405,7 +500,7 @@ final class TaskStore: ObservableObject {
         updateCompensationStreak(on: date)
         grantXP(loggedCount * 3)
         awardCompensationBadgesIfNeeded()
-        saveData()
+        recordProgressSnapshot(for: date)
         return loggedCount
     }
 
@@ -419,7 +514,7 @@ final class TaskStore: ObservableObject {
         updateCompensationStreak(on: date)
         grantXP(loggedCount * 12)
         awardCompensationBadgesIfNeeded()
-        saveData()
+        recordProgressSnapshot(for: date)
         return loggedCount
     }
 
@@ -439,7 +534,7 @@ final class TaskStore: ObservableObject {
             lastCompletionDate: nil,
             streak: 0
         )
-        saveData()
+        recordProgressSnapshot(for: Date())
     }
 
     func isQuranRevisionCompleted(on date: Date = Date()) -> Bool {
@@ -458,7 +553,7 @@ final class TaskStore: ObservableObject {
         updateQuranRevisionStreak(on: dayKey)
         grantXP(quranRevisionPlan.dailyGoalRubs * 6)
         awardQuranRevisionBadgesIfNeeded()
-        saveData()
+        recordProgressSnapshot(for: dayKey)
         return true
     }
 
@@ -493,14 +588,14 @@ final class TaskStore: ObservableObject {
     }
 
     func completion(for categories: [TaskCategory], on date: Date = Date()) -> Double {
-        let tasks = categories.flatMap { tasksForCategory($0) }
+        let tasks = availableTasks(for: categories, on: date)
         guard !tasks.isEmpty else { return 0 }
         let completed = tasks.filter { isTaskCompleted($0, on: date) }.count
         return Double(completed) / Double(tasks.count)
     }
 
     func nextUpTasks(limit: Int, on date: Date = Date()) -> [Task] {
-        Array(allTasks.filter { !isTaskCompleted($0, on: date) }.prefix(limit))
+        Array(allTasks.filter { isTaskActive($0, on: date) && !isTaskCompleted($0, on: date) }.prefix(limit))
     }
 
     func tasbihCount(for phrase: String) -> Int {
@@ -533,7 +628,10 @@ final class TaskStore: ObservableObject {
             guard let date = calendar.date(byAdding: .day, value: -(days - 1 - offset), to: today) else {
                 return nil
             }
-            return ProgressPoint(date: date, value: completion(for: categories, on: date))
+            if let storedPoint = progressHistory.first(where: { calendar.isDate($0.date, inSameDayAs: date) }) {
+                return ProgressPoint(date: date, value: storedPoint.value)
+            }
+            return ProgressPoint(date: date, value: insightCompletionValue(on: date))
         }
     }
 
@@ -631,7 +729,7 @@ final class TaskStore: ObservableObject {
         guard !windowDates.isEmpty else { return 0 }
 
         let consistentDays = windowDates.filter {
-            completion(for: categories, on: $0) >= minimumDailyCompletion
+            insightCompletionValue(on: $0) >= minimumDailyCompletion
         }.count
 
         return Double(consistentDays) / Double(windowDates.count)
@@ -665,6 +763,7 @@ final class TaskStore: ObservableObject {
 
     @discardableResult
     func toggleTask(taskId: UUID, on date: Date = Date()) -> Bool {
+        checkAndResetDaily()
         let dayKey = dateKey(date)
         guard let isCompleted = completionState(taskId: taskId, on: dayKey) else {
             return false
@@ -674,7 +773,8 @@ final class TaskStore: ObservableObject {
 
     @discardableResult
     func logTask(taskId: UUID, on date: Date = Date()) -> Bool {
-        updateTaskCompletion(taskId: taskId, completed: true, on: date)
+        checkAndResetDaily()
+        return updateTaskCompletion(taskId: taskId, completed: true, on: date)
     }
 
     func isTaskCompleted(_ task: Task, on date: Date) -> Bool {
@@ -682,7 +782,15 @@ final class TaskStore: ObservableObject {
         return completedLog[task.id]?.contains(dayKey) ?? false
     }
 
+    func availableTasks(for categories: [TaskCategory], on date: Date) -> [Task] {
+        categories.flatMap { tasksForCategory($0) }.filter { isTaskActive($0, on: date) }
+    }
+
     func removeTask(taskId: UUID) {
+        checkAndResetDaily()
+        let removedTask = findTask(taskId: taskId)
+        let completionCount = completedLog[taskId]?.count ?? 0
+
         for categoryIndex in categories.indices {
             if var subCategories = categories[categoryIndex].subCategories {
                 for subIndex in subCategories.indices {
@@ -698,14 +806,85 @@ final class TaskStore: ObservableObject {
         }
 
         completedLog[taskId] = nil
-        recordProgressSnapshot(for: Date())
+        if let removedTask {
+            if seededTaskIDs.contains(removedTask.id) {
+                deletedSeededTaskIDs.insert(removedTask.id)
+            }
+
+            if completionCount > 0 {
+                totalXP = max(0, totalXP - (completionCount * removedTask.score))
+            }
+            updateLevel()
+        }
+        recomputeTaskStreak()
+        rebuildRecentProgressHistory()
         saveData()
         refreshContextualNotifications()
     }
 
     @discardableResult
+    func updateTask(taskId: UUID, name: String, score: Int) -> Bool {
+        checkAndResetDaily()
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeName = normalizedName.isEmpty ? "مهمة جديدة" : normalizedName
+        let safeScore = max(1, score)
+
+        for categoryIndex in categories.indices {
+            if var subCategories = categories[categoryIndex].subCategories {
+                for subIndex in subCategories.indices {
+                    if let taskIndex = subCategories[subIndex].tasks.firstIndex(where: { $0.id == taskId }) {
+                        let currentTask = subCategories[subIndex].tasks[taskIndex]
+                        let updatedTask = Task(
+                            id: currentTask.id,
+                            name: safeName,
+                            score: safeScore,
+                            category: currentTask.category,
+                            isCompleted: currentTask.isCompleted,
+                            level: currentTask.level,
+                            badge: currentTask.badge,
+                            availableFrom: currentTask.availableFrom
+                        )
+
+                        subCategories[subIndex].tasks[taskIndex] = updatedTask
+                        categories[categoryIndex].subCategories = subCategories
+                        applyScoreDeltaIfNeeded(oldTask: currentTask, newTask: updatedTask)
+                        saveData()
+                        refreshContextualNotifications()
+                        return true
+                    }
+                }
+            }
+
+            if var tasks = categories[categoryIndex].tasks,
+               let taskIndex = tasks.firstIndex(where: { $0.id == taskId }) {
+                let currentTask = tasks[taskIndex]
+                let updatedTask = Task(
+                    id: currentTask.id,
+                    name: safeName,
+                    score: safeScore,
+                    category: currentTask.category,
+                    isCompleted: currentTask.isCompleted,
+                    level: currentTask.level,
+                    badge: currentTask.badge,
+                    availableFrom: currentTask.availableFrom
+                )
+
+                tasks[taskIndex] = updatedTask
+                categories[categoryIndex].tasks = tasks
+                applyScoreDeltaIfNeeded(oldTask: currentTask, newTask: updatedTask)
+                saveData()
+                refreshContextualNotifications()
+                return true
+            }
+        }
+
+        return false
+    }
+
+    @discardableResult
     func unlogTask(taskId: UUID, on date: Date = Date()) -> Bool {
-        updateTaskCompletion(taskId: taskId, completed: false, on: date)
+        checkAndResetDaily()
+        return updateTaskCompletion(taskId: taskId, completed: false, on: date)
     }
 
     private func updateTaskCompletion(taskId: UUID, completed targetState: Bool, on date: Date) -> Bool {
@@ -726,12 +905,7 @@ final class TaskStore: ObservableObject {
                         }
                         categories[categoryIndex].subCategories = subCategories
 
-                        if isToday {
-                            handleCompletionChange(task: task, wasCompleted: wasCompleted, isNowCompleted: targetState)
-                        } else {
-                            recordProgressSnapshot(for: dayKey)
-                            saveData()
-                        }
+                        handleCompletionChange(task: task, wasCompleted: wasCompleted, isNowCompleted: targetState, on: dayKey)
                         refreshContextualNotifications()
                         return true
                     }
@@ -750,12 +924,7 @@ final class TaskStore: ObservableObject {
                     }
                     categories[categoryIndex].tasks = tasks
 
-                    if isToday {
-                        handleCompletionChange(task: task, wasCompleted: wasCompleted, isNowCompleted: targetState)
-                    } else {
-                        recordProgressSnapshot(for: dayKey)
-                        saveData()
-                    }
+                    handleCompletionChange(task: task, wasCompleted: wasCompleted, isNowCompleted: targetState, on: dayKey)
                     refreshContextualNotifications()
                     return true
                 }
@@ -783,18 +952,18 @@ final class TaskStore: ObservableObject {
         return nil
     }
 
-    private func handleCompletionChange(task: Task, wasCompleted: Bool, isNowCompleted: Bool) {
+    private func handleCompletionChange(task: Task, wasCompleted: Bool, isNowCompleted: Bool, on date: Date) {
         if !wasCompleted && isNowCompleted {
             grantXP(task.score)
-            updateLevel()
-            updateStreakOnCompletion()
-            checkBadges()
+            recomputeTaskStreak()
+            checkBadges(on: date)
         } else if wasCompleted && !isNowCompleted {
             totalXP = max(0, totalXP - task.score)
-            updateLevel()
+            recomputeTaskStreak()
         }
 
-        recordProgressSnapshot(for: Date())
+        updateLevel()
+        recordProgressSnapshot(for: date)
         saveData()
     }
 
@@ -802,39 +971,40 @@ final class TaskStore: ObservableObject {
         level = max(1, totalXP / xpPerLevel + 1)
     }
 
-    private func updateStreakOnCompletion() {
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
-
-        if let lastDate = lastCompletionDate {
-            let lastDay = calendar.startOfDay(for: lastDate)
-            if lastDay == today {
-                return
-            }
-
-            let yesterday = calendar.date(byAdding: .day, value: -1, to: today)
-            if yesterday == lastDay {
-                streak += 1
-            } else {
-                streak = 1
-            }
-        } else {
-            streak = 1
+    private func recomputeTaskStreak() {
+        let distinctDates = Set(completedLog.values.flatMap { $0 })
+        guard let latestCompletionDate = distinctDates.max() else {
+            streak = 0
+            lastCompletionDate = nil
+            return
         }
 
-        lastCompletionDate = today
+        let calendar = Calendar.current
+        var currentDate = latestCompletionDate
+        var rebuiltStreak = 0
 
-        if streak == 7 {
+        while distinctDates.contains(currentDate) {
+            rebuiltStreak += 1
+            guard let previousDay = calendar.date(byAdding: .day, value: -1, to: currentDate) else {
+                break
+            }
+            currentDate = previousDay
+        }
+
+        streak = rebuiltStreak
+        lastCompletionDate = latestCompletionDate
+
+        if streak >= 7 {
             addBadge("سلسلة ٧ أيام")
         }
-        if streak == 30 {
+        if streak >= 30 {
             addBadge("سلسلة ٣٠ يومًا")
         }
     }
 
-    private func checkBadges() {
+    private func checkBadges(on date: Date) {
         for category in categories {
-            if completion(for: category) >= 1 {
+            if completion(for: [category], on: date) >= 1 {
                 switch category.name {
                 case "اليومي":
                     addBadge("بطل الأعمال اليومية")
@@ -860,7 +1030,7 @@ final class TaskStore: ObservableObject {
 
     func recordProgressSnapshot(for date: Date) {
         let dayKey = dateKey(date)
-        let value = completion(for: categories, on: dayKey)
+        let value = insightCompletionValue(on: dayKey)
 
         if let index = progressHistory.firstIndex(where: { Calendar.current.isDate($0.date, inSameDayAs: dayKey) }) {
             progressHistory[index] = ProgressPoint(date: dayKey, value: value)
@@ -877,20 +1047,34 @@ final class TaskStore: ObservableObject {
     }
 
     private func completionRate(forLastDays days: Int) -> Double {
-        guard days > 0 else { return 0 }
-        let calendar = Calendar.current
-        let today = calendar.startOfDay(for: Date())
+        let series = completionSeries(days: days)
+        guard !series.isEmpty else { return 0 }
+        let total = series.map(\ .value).reduce(0, +)
+        return total / Double(series.count)
+    }
 
-        let totalOpportunities = allTasks.count * days
-        guard totalOpportunities > 0 else { return 0 }
+    private func insightCompletionValue(on date: Date) -> Double {
+        var components: [Double] = [completion(for: categories, on: date)]
 
-        var completed = 0
-        for offset in 0..<days {
-            guard let date = calendar.date(byAdding: .day, value: -offset, to: today) else { continue }
-            completed += allTasks.filter { isTaskCompleted($0, on: date) }.count
+        if totalCompensationDebtUnits > 0 {
+            components.append(compensationCompletionRate)
         }
 
-        return Double(completed) / Double(totalOpportunities)
+        if quranRevisionPlan.totalMemorizedRubs > 0 {
+            components.append(quranRevisionCompletionRate(on: date))
+        }
+
+        let total = components.reduce(0, +)
+        return total / Double(components.count)
+    }
+
+    private func quranRevisionCompletionRate(on date: Date) -> Double {
+        guard quranRevisionPlan.totalMemorizedRubs > 0 else { return 0 }
+
+        let dayKey = dateKey(date)
+        let completedRubs = quranRevisionPlan.completedDates.filter { $0 <= dayKey }.count * quranRevisionPlan.dailyGoalRubs
+        let cycleRubs = completedRubs % quranRevisionPlan.totalMemorizedRubs
+        return Double(cycleRubs) / Double(quranRevisionPlan.totalMemorizedRubs)
     }
 
     private func lastNDates(days: Int) -> [Date] {
@@ -902,7 +1086,12 @@ final class TaskStore: ObservableObject {
         }
     }
 
-    private func isTaskActive(_ task: Task, on date: Date) -> Bool {
+    func isTaskActive(_ task: Task, on date: Date) -> Bool {
+        if let availableFrom = task.availableFrom,
+           dateKey(date) < dateKey(availableFrom) {
+            return false
+        }
+
         if task.category == "وظائف الجمعة" {
             return Calendar.current.component(.weekday, from: date) == 6
         }
@@ -1074,16 +1263,122 @@ final class TaskStore: ObservableObject {
         return tasks
     }
 
+    private func mergeStoredCategories(_ stored: [TaskCategory], into defaults: [TaskCategory]) -> [TaskCategory] {
+        var merged = defaults.map { defaultCategory in
+            guard let storedCategory = stored.first(where: { $0.name == defaultCategory.name }) else {
+                return defaultCategory
+            }
+            return mergeCategory(defaultCategory, with: storedCategory)
+        }
+
+        let defaultNames = Set(defaults.map(\ .name))
+        let extraStoredCategories = stored.filter { !defaultNames.contains($0.name) }
+        merged.append(contentsOf: extraStoredCategories)
+        return merged
+    }
+
+    private func mergeCategory(_ base: TaskCategory, with stored: TaskCategory) -> TaskCategory {
+        TaskCategory(
+            name: base.name,
+            subCategories: mergeSubCategories(base.subCategories, with: stored.subCategories),
+            tasks: mergeTasks(base.tasks, with: stored.tasks)
+        )
+    }
+
+    private func mergeSubCategories(_ base: [SubCategory]?, with stored: [SubCategory]?) -> [SubCategory]? {
+        guard base != nil || stored != nil else { return nil }
+
+        var merged: [SubCategory] = []
+        let baseSubCategories = base ?? []
+        let storedSubCategories = stored ?? []
+
+        for baseSubCategory in baseSubCategories {
+            if let storedSubCategory = storedSubCategories.first(where: { $0.name == baseSubCategory.name }) {
+                merged.append(
+                    SubCategory(
+                        name: baseSubCategory.name,
+                        tasks: mergeTasks(baseSubCategory.tasks, with: storedSubCategory.tasks) ?? []
+                    )
+                )
+            } else {
+                merged.append(baseSubCategory)
+            }
+        }
+
+        let baseNames = Set(baseSubCategories.map(\ .name))
+        merged.append(contentsOf: storedSubCategories.filter { !baseNames.contains($0.name) })
+        return merged.isEmpty ? nil : merged
+    }
+
+    private func mergeTasks(_ base: [Task]?, with stored: [Task]?) -> [Task]? {
+        guard base != nil || stored != nil else { return nil }
+
+        var merged: [Task] = []
+        var seenTaskIDs = Set<UUID>()
+
+        for task in base ?? [] {
+            let storedTask = stored?.first(where: { $0.id == task.id })
+            let mergedTask = storedTask ?? task
+            if seenTaskIDs.insert(mergedTask.id).inserted {
+                merged.append(mergedTask)
+            }
+        }
+
+        for task in stored ?? [] {
+            if seenTaskIDs.insert(task.id).inserted {
+                merged.append(task)
+            }
+        }
+
+        return merged.isEmpty ? nil : merged
+    }
+
+    private func extractCustomTasks(from categories: [TaskCategory], comparedTo defaults: [TaskCategory]) -> [Task] {
+        let seededTaskIDs = Set(defaults.flatMap(tasksForCategory).map(\ .id))
+        return categories
+            .flatMap(tasksForCategory)
+            .filter { !seededTaskIDs.contains($0.id) }
+    }
+
+    private func applyCustomTasks(_ tasks: [Task], to categories: inout [TaskCategory]) {
+        guard !tasks.isEmpty else { return }
+
+        for task in tasks {
+            guard !categories.flatMap(tasksForCategory).contains(where: { $0.id == task.id }) else {
+                continue
+            }
+
+            if let categoryIndex = categories.firstIndex(where: { $0.name == task.category }) {
+                if categories[categoryIndex].tasks != nil {
+                    categories[categoryIndex].tasks?.append(task)
+                } else {
+                    categories[categoryIndex].tasks = [task]
+                }
+            } else {
+                categories.append(TaskCategory(name: task.category, subCategories: nil, tasks: [task]))
+            }
+        }
+    }
+
     // MARK: - Mutating helpers
 
-    func addTask(name: String, score: Int, categoryName: String) {
+    func addTask(name: String, score: Int, categoryName: String, availableFrom date: Date = Date()) {
         let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedCategory = categoryName.trimmingCharacters(in: .whitespacesAndNewlines)
         let safeName = normalizedName.isEmpty ? "مهمة جديدة" : normalizedName
         let safeCategory = normalizedCategory.isEmpty ? "عام" : normalizedCategory
         let safeScore = max(1, score)
+        let startDate = dateKey(date)
 
-        let newTask = Task(name: safeName, score: safeScore, category: safeCategory, isCompleted: false, level: 1, badge: nil)
+        let newTask = Task(
+            name: safeName,
+            score: safeScore,
+            category: safeCategory,
+            isCompleted: false,
+            level: 1,
+            badge: nil,
+            availableFrom: startDate
+        )
 
         // Try to find an exact category match
         if let catIndex = categories.firstIndex(where: { $0.name == safeCategory }) {
@@ -1100,13 +1395,149 @@ final class TaskStore: ObservableObject {
         }
 
         // Ensure persistence and update snapshots
-        recordProgressSnapshot(for: Date())
+        recordProgressSnapshot(for: startDate)
         saveData()
         refreshContextualNotifications()
     }
 
+    private func findTask(taskId: UUID) -> Task? {
+        for category in categories {
+            if let subCategories = category.subCategories {
+                for subCategory in subCategories {
+                    if let task = subCategory.tasks.first(where: { $0.id == taskId }) {
+                        return task
+                    }
+                }
+            }
+
+            if let tasks = category.tasks,
+               let task = tasks.first(where: { $0.id == taskId }) {
+                return task
+            }
+        }
+
+        return nil
+    }
+
+    private func applyTodayCompletionFlags() {
+        let today = dateKey(Date())
+
+        for categoryIndex in categories.indices {
+            if var subCategories = categories[categoryIndex].subCategories {
+                for subIndex in subCategories.indices {
+                    for taskIndex in subCategories[subIndex].tasks.indices {
+                        let taskId = subCategories[subIndex].tasks[taskIndex].id
+                        subCategories[subIndex].tasks[taskIndex].isCompleted = completedLog[taskId]?.contains(today) ?? false
+                    }
+                }
+                categories[categoryIndex].subCategories = subCategories
+            }
+
+            if var tasks = categories[categoryIndex].tasks {
+                for taskIndex in tasks.indices {
+                    let taskId = tasks[taskIndex].id
+                    tasks[taskIndex].isCompleted = completedLog[taskId]?.contains(today) ?? false
+                }
+                categories[categoryIndex].tasks = tasks
+            }
+        }
+    }
+
+    private func applyScoreDeltaIfNeeded(oldTask: Task, newTask: Task) {
+        let completionCount = completedLog[oldTask.id]?.count ?? 0
+        guard oldTask.score != newTask.score, completionCount > 0 else { return }
+        let delta = completionCount * (newTask.score - oldTask.score)
+        totalXP = max(0, totalXP + delta)
+        updateLevel()
+    }
+
     private func dateKey(_ date: Date) -> Date {
         Calendar.current.startOfDay(for: date)
+    }
+
+    private var seededTaskIDs: Set<UUID> {
+        Set(defaultCategories.flatMap(tasksForCategory).map(\ .id))
+    }
+
+    private func defaultCategoriesApplyingDeletions() -> [TaskCategory] {
+        defaultCategories.map { category in
+            let filteredSubCategories = category.subCategories?.compactMap { subCategory -> SubCategory? in
+                let filteredTasks = subCategory.tasks.filter { !deletedSeededTaskIDs.contains($0.id) }
+                guard !filteredTasks.isEmpty else { return nil }
+                return SubCategory(name: subCategory.name, tasks: filteredTasks)
+            }
+
+            let filteredTasks = category.tasks?.filter { !deletedSeededTaskIDs.contains($0.id) }
+
+            return TaskCategory(
+                name: category.name,
+                subCategories: filteredSubCategories,
+                tasks: filteredTasks
+            )
+        }
+    }
+
+    private func rebuildRecentProgressHistory() {
+        let calendar = Calendar.current
+        let today = dateKey(Date())
+        let recentPoints = (0..<30).compactMap { offset -> ProgressPoint? in
+            guard let date = calendar.date(byAdding: .day, value: -offset, to: today) else {
+                return nil
+            }
+            let dayKey = dateKey(date)
+            return ProgressPoint(date: dayKey, value: insightCompletionValue(on: dayKey))
+        }
+        .sorted { $0.date < $1.date }
+
+        progressHistory = recentPoints
+    }
+
+    private func makeCustomTask(name: String, score: Int, category: String, availableFrom date: Date) -> Task {
+        Task(
+            id: UUID(),
+            name: name,
+            score: score,
+            category: category,
+            isCompleted: false,
+            level: 1,
+            badge: nil,
+            availableFrom: date
+        )
+    }
+
+    private func appendTask(_ task: Task, toCategory categoryName: String) {
+        if let categoryIndex = categories.firstIndex(where: { $0.name == categoryName }) {
+            if categories[categoryIndex].tasks != nil {
+                categories[categoryIndex].tasks?.append(task)
+            } else {
+                categories[categoryIndex].tasks = [task]
+            }
+        } else {
+            categories.append(TaskCategory(name: categoryName, subCategories: nil, tasks: [task]))
+        }
+    }
+
+    private func appendTask(_ task: Task, toBundle bundleName: String, inCategory categoryName: String) {
+        if let categoryIndex = categories.firstIndex(where: { $0.name == categoryName }) {
+            if categories[categoryIndex].subCategories == nil {
+                categories[categoryIndex].subCategories = [SubCategory(name: bundleName, tasks: [task])]
+                return
+            }
+
+            if let subCategoryIndex = categories[categoryIndex].subCategories?.firstIndex(where: { $0.name == bundleName }) {
+                categories[categoryIndex].subCategories?[subCategoryIndex].tasks.append(task)
+            } else {
+                categories[categoryIndex].subCategories?.append(SubCategory(name: bundleName, tasks: [task]))
+            }
+        } else {
+            categories.append(TaskCategory(name: categoryName, subCategories: [SubCategory(name: bundleName, tasks: [task])], tasks: nil))
+        }
+    }
+
+    private func finalizeTaskStructureMutation() {
+        rebuildRecentProgressHistory()
+        saveData()
+        refreshContextualNotifications()
     }
 
     private func removeLegacyRamadanData() {
@@ -1119,6 +1550,64 @@ final class TaskStore: ObservableObject {
         completedLog = completedLog.filter { validTaskIDs.contains($0.key) }
     }
 
+
+    func addTask(name: String, score: Int, toCategory categoryName: String, availableFrom date: Date = Date()) {
+        checkAndResetDaily()
+
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCategory = categoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeName = normalizedName.isEmpty ? "مهمة جديدة" : normalizedName
+        let safeCategory = normalizedCategory.isEmpty ? "عام" : normalizedCategory
+        let safeScore = max(1, score)
+        let startDate = dateKey(date)
+
+        let newTask = makeCustomTask(name: safeName, score: safeScore, category: safeCategory, availableFrom: startDate)
+        appendTask(newTask, toCategory: safeCategory)
+        finalizeTaskStructureMutation()
+    }
+
+    func addTask(name: String, score: Int, toPrayer prayerName: String, availableFrom date: Date = Date()) {
+        checkAndResetDaily()
+
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeName = normalizedName.isEmpty ? "مهمة جديدة" : normalizedName
+        let safeScore = max(1, score)
+        let safePrayer = prayerName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let startDate = dateKey(date)
+        let bundleName = prayerTaskTargets.first(where: { $0.prayerName == safePrayer })?.bundleName ?? safePrayer
+        let newTask = makeCustomTask(name: safeName, score: safeScore, category: safePrayer, availableFrom: startDate)
+
+        appendTask(newTask, toBundle: bundleName, inCategory: "اليومي")
+        finalizeTaskStructureMutation()
+    }
+
+    func addTask(name: String, score: Int, toAllPrayersAvailableFrom date: Date = Date()) {
+        checkAndResetDaily()
+
+        let startDate = dateKey(date)
+        for target in prayerTaskTargets {
+            let safeName = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "مهمة جديدة" : name.trimmingCharacters(in: .whitespacesAndNewlines)
+            let safeScore = max(1, score)
+            let newTask = makeCustomTask(name: safeName, score: safeScore, category: target.prayerName, availableFrom: startDate)
+            appendTask(newTask, toBundle: target.bundleName, inCategory: "اليومي")
+        }
+        finalizeTaskStructureMutation()
+    }
+
+    func addTask(name: String, score: Int, toBundle bundleName: String, inCategory categoryName: String, availableFrom date: Date = Date()) {
+        checkAndResetDaily()
+
+        let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeName = normalizedName.isEmpty ? "مهمة جديدة" : normalizedName
+        let safeScore = max(1, score)
+        let safeBundleName = bundleName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safeCategoryName = categoryName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let startDate = dateKey(date)
+        let newTask = makeCustomTask(name: safeName, score: safeScore, category: safeBundleName, availableFrom: startDate)
+
+        appendTask(newTask, toBundle: safeBundleName, inCategory: safeCategoryName)
+        finalizeTaskStructureMutation()
+    }
     private func setCompletion(taskId: UUID, completed: Bool, on date: Date) {
         var entries = completedLog[taskId] ?? []
         if completed {

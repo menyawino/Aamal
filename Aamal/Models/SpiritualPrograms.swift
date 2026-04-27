@@ -81,14 +81,40 @@ struct CompensationProgress: Codable {
 struct QuranRevisionPlan: Codable {
     var totalMemorizedRubs: Int
     var dailyGoalRubs: Int
+    var recentWindowRubs: Int
+    var newMemorizationTargetRubs: Int
+    var prayerCapacities: [String: Int]
     var startDate: Date
     var completedDates: [Date]
     var lastCompletionDate: Date?
     var streak: Int
 
+    private enum CodingKeys: String, CodingKey {
+        case totalMemorizedRubs
+        case dailyGoalRubs
+        case recentWindowRubs
+        case newMemorizationTargetRubs
+        case prayerCapacities
+        case startDate
+        case completedDates
+        case lastCompletionDate
+        case streak
+    }
+
+    static let defaultPrayerCapacities: [String: Int] = [
+        PrayerCompensationType.fajr.rawValue: 15,
+        PrayerCompensationType.dhuhr.rawValue: 20,
+        PrayerCompensationType.asr.rawValue: 20,
+        PrayerCompensationType.maghrib.rawValue: 15,
+        PrayerCompensationType.isha.rawValue: 10
+    ]
+
     init(
         totalMemorizedRubs: Int = 0,
-        dailyGoalRubs: Int = 1,
+        dailyGoalRubs: Int = 4,
+        recentWindowRubs: Int? = nil,
+        newMemorizationTargetRubs: Int = 1,
+        prayerCapacities: [String: Int] = QuranRevisionPlan.defaultPrayerCapacities,
         startDate: Date = Date(),
         completedDates: [Date] = [],
         lastCompletionDate: Date? = nil,
@@ -96,6 +122,9 @@ struct QuranRevisionPlan: Codable {
     ) {
         self.totalMemorizedRubs = totalMemorizedRubs
         self.dailyGoalRubs = dailyGoalRubs
+        self.recentWindowRubs = recentWindowRubs ?? Self.defaultRecentWindow(for: totalMemorizedRubs)
+        self.newMemorizationTargetRubs = newMemorizationTargetRubs
+        self.prayerCapacities = prayerCapacities
         self.startDate = startDate
         self.completedDates = completedDates
         self.lastCompletionDate = lastCompletionDate
@@ -103,15 +132,210 @@ struct QuranRevisionPlan: Codable {
         normalize()
     }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        totalMemorizedRubs = try container.decodeIfPresent(Int.self, forKey: .totalMemorizedRubs) ?? 0
+        dailyGoalRubs = try container.decodeIfPresent(Int.self, forKey: .dailyGoalRubs) ?? 4
+        recentWindowRubs = try container.decodeIfPresent(Int.self, forKey: .recentWindowRubs)
+            ?? Self.defaultRecentWindow(for: totalMemorizedRubs)
+        newMemorizationTargetRubs = try container.decodeIfPresent(Int.self, forKey: .newMemorizationTargetRubs) ?? 1
+        prayerCapacities = try container.decodeIfPresent([String: Int].self, forKey: .prayerCapacities)
+            ?? Self.defaultPrayerCapacities
+        startDate = try container.decodeIfPresent(Date.self, forKey: .startDate) ?? Date()
+        completedDates = try container.decodeIfPresent([Date].self, forKey: .completedDates) ?? []
+        lastCompletionDate = try container.decodeIfPresent(Date.self, forKey: .lastCompletionDate)
+        streak = try container.decodeIfPresent(Int.self, forKey: .streak) ?? 0
+        normalize()
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(totalMemorizedRubs, forKey: .totalMemorizedRubs)
+        try container.encode(dailyGoalRubs, forKey: .dailyGoalRubs)
+        try container.encode(recentWindowRubs, forKey: .recentWindowRubs)
+        try container.encode(newMemorizationTargetRubs, forKey: .newMemorizationTargetRubs)
+        try container.encode(prayerCapacities, forKey: .prayerCapacities)
+        try container.encode(startDate, forKey: .startDate)
+        try container.encode(completedDates, forKey: .completedDates)
+        try container.encodeIfPresent(lastCompletionDate, forKey: .lastCompletionDate)
+        try container.encode(streak, forKey: .streak)
+    }
+
     mutating func normalize() {
         totalMemorizedRubs = min(max(0, totalMemorizedRubs), 240)
-        dailyGoalRubs = min(max(1, dailyGoalRubs), max(1, totalMemorizedRubs == 0 ? 1 : totalMemorizedRubs))
+        dailyGoalRubs = min(max(1, dailyGoalRubs), max(1, min(totalMemorizedRubs == 0 ? 12 : totalMemorizedRubs, 12)))
+        recentWindowRubs = min(max(1, recentWindowRubs), max(1, min(totalMemorizedRubs == 0 ? 16 : totalMemorizedRubs, 16)))
+        newMemorizationTargetRubs = min(max(0, newMemorizationTargetRubs), totalMemorizedRubs >= 240 ? 0 : 2)
+        prayerCapacities = Self.normalizedPrayerCapacities(from: prayerCapacities)
         completedDates = Array(Set(completedDates.map { Calendar.current.startOfDay(for: $0) })).sorted()
         if let lastCompletionDate {
             self.lastCompletionDate = Calendar.current.startOfDay(for: lastCompletionDate)
         }
         startDate = Calendar.current.startOfDay(for: startDate)
         streak = max(0, streak)
+    }
+
+    func capacity(for prayer: PrayerCompensationType) -> Int {
+        prayerCapacities[prayer.rawValue] ?? 0
+    }
+
+    var totalPrayerCapacityAyahs: Int {
+        PrayerCompensationType.allCases.reduce(0) { partial, prayer in
+            partial + capacity(for: prayer)
+        }
+    }
+
+    private static func defaultRecentWindow(for totalMemorizedRubs: Int) -> Int {
+        guard totalMemorizedRubs > 0 else { return 4 }
+        return min(max(4, totalMemorizedRubs / 5), min(16, totalMemorizedRubs))
+    }
+
+    private static func normalizedPrayerCapacities(from values: [String: Int]) -> [String: Int] {
+        var normalized: [String: Int] = [:]
+        for prayer in PrayerCompensationType.allCases {
+            normalized[prayer.rawValue] = min(max(0, values[prayer.rawValue] ?? defaultPrayerCapacities[prayer.rawValue] ?? 0), 40)
+        }
+        return normalized
+    }
+}
+
+enum QuranPlanSegmentKind: String, CaseIterable, Hashable {
+    case newMemorization
+    case recovery
+    case recentRevision
+    case pastRevision
+    case reinforcement
+
+    var title: String {
+        switch self {
+        case .newMemorization:
+            return "الحفظ الجديد"
+        case .recovery:
+            return "استرجاع الضعيف"
+        case .recentRevision:
+            return "مراجعة السبقي"
+        case .pastRevision:
+            return "مراجعة الماضي"
+        case .reinforcement:
+            return "تثبيت إضافي"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .newMemorization:
+            return "جديد"
+        case .recovery:
+            return "استرجاع"
+        case .recentRevision:
+            return "سبقي"
+        case .pastRevision:
+            return "ماضٍ"
+        case .reinforcement:
+            return "تثبيت"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .newMemorization:
+            return "book.closed.fill"
+        case .recovery:
+            return "shield.lefthalf.filled"
+        case .recentRevision:
+            return "clock.arrow.trianglehead.counterclockwise.rotate.90"
+        case .pastRevision:
+            return "books.vertical.fill"
+        case .reinforcement:
+            return "sparkles"
+        }
+    }
+}
+
+struct QuranPlanSummaryItem: Identifiable, Hashable {
+    let kind: QuranPlanSegmentKind
+    let rubs: [QuranRubReference]
+    let estimatedAyahs: Int
+
+    var id: String {
+        "\(kind.rawValue)-\(rubs.map(\ .globalRubIndex).map(String.init).joined(separator: "-"))"
+    }
+
+    var quantityText: String {
+        guard !rubs.isEmpty else { return "0" }
+        if rubs.count % 8 == 0 {
+            return "\(rubs.count / 8) جزء"
+        }
+        if rubs.count % 4 == 0 {
+            return "\(rubs.count / 4) حزب"
+        }
+        if rubs.count == 1 {
+            return "ربع واحد"
+        }
+        return "\(rubs.count) أرباع"
+    }
+
+    var rangeText: String {
+        guard let first = rubs.first else { return "" }
+        guard let last = rubs.last, last != first else {
+            return first.detailedTitle
+        }
+        return "\(first.detailedTitle) إلى \(last.detailedTitle)"
+    }
+}
+
+struct QuranPlanPageSlice: Identifiable, Hashable {
+    let kind: QuranPlanSegmentKind
+    let rub: QuranRubReference
+    let startPage: Int
+    let endPage: Int
+    let estimatedAyahs: Int
+
+    var id: String {
+        "\(kind.rawValue)-\(rub.globalRubIndex)-\(startPage)-\(endPage)"
+    }
+
+    var pageText: String {
+        if startPage == endPage {
+            return "صفحة \(startPage)"
+        }
+        return "صفحات \(startPage)-\(endPage)"
+    }
+
+    var title: String {
+        "\(kind.title): \(pageText)"
+    }
+
+    var detailText: String {
+        "\(rub.detailedTitle) • \(pageText)"
+    }
+}
+
+struct QuranPrayerAssignment: Identifiable, Hashable {
+    let prayer: PrayerCompensationType
+    let capacityAyahs: Int
+    let assignedAyahs: Int
+    let segments: [QuranPlanPageSlice]
+
+    var id: String { prayer.rawValue }
+
+    var primaryKind: QuranPlanSegmentKind? {
+        segments.first?.kind
+    }
+}
+
+struct QuranAdaptiveDailyPlan: Hashable {
+    let date: Date
+    let newMemorization: QuranPlanSummaryItem?
+    let requiredRevision: [QuranPlanSummaryItem]
+    let prayerAssignments: [QuranPrayerAssignment]
+    let guidance: String
+    let newMemorizationAllowed: Bool
+
+    var totalAssignedAyahs: Int {
+        prayerAssignments.reduce(0) { partial, assignment in
+            partial + assignment.assignedAyahs
+        }
     }
 }
 

@@ -2,7 +2,7 @@ import Foundation
 import CryptoKit
 
 /// Defines the `Task` model with properties for name, score, category, and completion status, along with a method to toggle task completion.
-struct Task: Identifiable {
+struct Task: Identifiable, Codable {
     let id: UUID
     var name: String
     var score: Int
@@ -10,6 +10,7 @@ struct Task: Identifiable {
     var isCompleted: Bool
     var level: Int
     var badge: String?
+    var availableFrom: Date?
 
     init(
         id: UUID? = nil,
@@ -18,15 +19,17 @@ struct Task: Identifiable {
         category: String,
         isCompleted: Bool,
         level: Int,
-        badge: String?
+        badge: String?,
+        availableFrom: Date? = nil
     ) {
-        self.id = id ?? Task.stableID(name: name, category: category, score: score)
+        self.id = id ?? UUID()
         self.name = name
         self.score = score
         self.category = category
         self.isCompleted = isCompleted
         self.level = level
         self.badge = badge
+        self.availableFrom = availableFrom
     }
 
     /// Toggles the completion status of the task.
@@ -44,7 +47,7 @@ struct Task: Identifiable {
         badge = badgeName
     }
 
-    private static func stableID(name: String, category: String, score: Int) -> UUID {
+    static func seededID(name: String, category: String, score: Int) -> UUID {
         let base = "\(name)|\(category)|\(score)"
         let digest = SHA256.hash(data: Data(base.utf8))
         let bytes = Array(digest)
@@ -58,19 +61,27 @@ struct Task: Identifiable {
     }
 }
 
-struct SubCategory {
+struct SubCategory: Codable {
     let name: String
     var tasks: [Task]
 }
 
-struct TaskCategory {
+struct TaskCategory: Codable {
     let name: String
     var subCategories: [SubCategory]?
     var tasks: [Task]?
 }
 
 private func seededTask(_ name: String, score: Int = 1, category: String) -> Task {
-    Task(name: name, score: score, category: category, isCompleted: false, level: 1, badge: nil)
+    Task(
+        id: Task.seededID(name: name, category: category, score: score),
+        name: name,
+        score: score,
+        category: category,
+        isCompleted: false,
+        level: 1,
+        badge: nil
+    )
 }
 
 let dailyCategory = TaskCategory(name: "اليومي", subCategories: [

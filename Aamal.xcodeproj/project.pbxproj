@@ -23,10 +23,24 @@
 		};
 /* End PBXContainerItemProxy section */
 
+/* Begin PBXCopyFilesBuildPhase section */
+		FCF767EE2F78E746005597B0 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		FC81A8A42F1F814A00C285F0 /* Aamal.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Aamal.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC81A8B32F1F814B00C285F0 /* AamalTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AamalTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC81A8BD2F1F814B00C285F0 /* AamalUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = AamalUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FCF767DB2F78E745005597B0 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -78,6 +92,7 @@
 				FC81A8A62F1F814A00C285F0 /* Aamal */,
 				FC81A8B62F1F814B00C285F0 /* AamalTests */,
 				FC81A8C02F1F814B00C285F0 /* AamalUITests */,
+				FCF767D82F78E745005597B0 /* Frameworks */,
 				FC81A8A52F1F814A00C285F0 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -92,6 +107,14 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		FCF767D82F78E745005597B0 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				FCF767DB2F78E745005597B0 /* SwiftUI.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -102,6 +125,7 @@
 				FC81A8A02F1F814A00C285F0 /* Sources */,
 				FC81A8A12F1F814A00C285F0 /* Frameworks */,
 				FC81A8A22F1F814A00C285F0 /* Resources */,
+				FCF767EE2F78E746005597B0 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
@@ -170,8 +194,8 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
-				LastSwiftUpdateCheck = 2620;
-				LastUpgradeCheck = 2620;
+				LastSwiftUpdateCheck = 2630;
+				LastUpgradeCheck = 2630;
 				TargetAttributes = {
 					FC81A8A32F1F814A00C285F0 = {
 						CreatedOnToolsVersion = 26.2;
@@ -328,6 +352,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -385,6 +410,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
 			};

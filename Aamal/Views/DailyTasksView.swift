@@ -1,11 +1,39 @@
 import SwiftUI
 
+private enum AddTaskPlacement: String, CaseIterable, Identifiable {
+    case allPrayers
+    case singlePrayer
+    case bundle
+    case category
+    case customCategory
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .allPrayers:
+            return "كل الصلوات"
+        case .singlePrayer:
+            return "صلاة واحدة"
+        case .bundle:
+            return "حزمة"
+        case .category:
+            return "تصنيف علوي"
+        case .customCategory:
+            return "تصنيف مخصص"
+        }
+    }
+}
+
 struct DailyTasksView: View {
     @ObservedObject var store: TaskStore
     @State private var selectedDate = Date()
     @State private var showAddTaskSheet = false
     @State private var newTaskName: String = ""
     @State private var newTaskScore: Int = 1
+    @State private var selectedPlacement: AddTaskPlacement = .bundle
+    @State private var selectedPrayerName: String = ""
+    @State private var selectedBundleID: String = ""
     @State private var selectedCategoryName: String = ""
     @State private var customCategoryName: String = ""
     @State private var searchText: String = ""
@@ -49,13 +77,13 @@ struct DailyTasksView: View {
     }
 
     private var selectedDateTotalTasks: Int {
-        baseCategories.reduce(0) { partial, category in
-            partial + tasksForCategory(category).count
-        }
+        store.availableTasks(for: baseCategories, on: selectedDate).count
     }
 
     private var selectedDateCompletedTasks: Int {
-        baseCategories.flatMap(tasksForCategory).filter { store.isTaskCompleted($0, on: selectedDate) }.count
+        store.availableTasks(for: baseCategories, on: selectedDate)
+            .filter { store.isTaskCompleted($0, on: selectedDate) }
+            .count
     }
 
     private var selectedDateCompletion: Double {
@@ -71,12 +99,36 @@ struct DailyTasksView: View {
         customCategoryName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var prayerTargets: [PrayerTaskTarget] {
+        store.prayerTaskTargets
+    }
+
+    private var bundleTargets: [BundleTaskTarget] {
+        store.nonPrayerBundleTargets
+    }
+
+    private var categoryTargets: [String] {
+        store.categories.map(\ .name)
+    }
+
+    private var selectedBundleTarget: BundleTaskTarget? {
+        bundleTargets.first(where: { $0.id == selectedBundleID })
+    }
+
     private var canSaveNewTask: Bool {
         guard !normalizedTaskName.isEmpty else { return false }
-        if selectedCategoryName == "مخصص" {
+        switch selectedPlacement {
+        case .allPrayers:
+            return !prayerTargets.isEmpty
+        case .singlePrayer:
+            return !selectedPrayerName.isEmpty
+        case .bundle:
+            return selectedBundleTarget != nil
+        case .category:
+            return !selectedCategoryName.isEmpty
+        case .customCategory:
             return !normalizedCustomCategory.isEmpty
         }
-        return true
     }
 
     var body: some View {
@@ -187,21 +239,48 @@ struct DailyTasksView: View {
                             }
                         }
 
-                        Section(header: Text("التصنيف")) {
-                            Picker("اختر تصنيفا", selection: $selectedCategoryName) {
-                                ForEach(store.categories.map { $0.name }, id: \.self) { name in
-                                    Text(name).tag(name)
+                        Section(header: Text("جهة الإضافة")) {
+                            Picker("نوع الإضافة", selection: $selectedPlacement) {
+                                ForEach(AddTaskPlacement.allCases) { placement in
+                                    Text(placement.title).tag(placement)
                                 }
-                                Text("مخصص").tag("مخصص")
                             }
 
-                            if selectedCategoryName == "مخصص" {
+                            switch selectedPlacement {
+                            case .allPrayers:
+                                Text("سيتم إنشاء نسخة من المهمة داخل كل مجموعة صلاة.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+
+                            case .singlePrayer:
+                                Picker("الصلاة", selection: $selectedPrayerName) {
+                                    ForEach(prayerTargets) { target in
+                                        Text(target.prayerName).tag(target.prayerName)
+                                    }
+                                }
+
+                            case .bundle:
+                                Picker("الحزمة", selection: $selectedBundleID) {
+                                    ForEach(bundleTargets) { target in
+                                        Text("\(target.bundleName) • \(target.categoryName)")
+                                            .tag(target.id)
+                                    }
+                                }
+
+                            case .category:
+                                Picker("التصنيف", selection: $selectedCategoryName) {
+                                    ForEach(categoryTargets, id: \.self) { name in
+                                        Text(name).tag(name)
+                                    }
+                                }
+
+                            case .customCategory:
                                 TextField("اسم التصنيف المخصص", text: $customCategoryName)
                             }
                         }
 
                         Section {
-                            Text("سيتم حفظ المهمة مباشرة وإظهارها ضمن التصنيف المختار.")
+                            Text("سيتم حفظ المهمة مباشرة وإظهارها في الجهة التي اخترتها للتسجيل والمتابعة.")
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
@@ -223,9 +302,7 @@ struct DailyTasksView: View {
                         }
                     }
                     .onAppear {
-                        if selectedCategoryName.isEmpty {
-                            selectedCategoryName = store.categories.first?.name ?? "عام"
-                        }
+                        synchronizeAddTaskSelections()
                     }
                 }
             }
@@ -250,12 +327,29 @@ struct DailyTasksView: View {
     }
 
     private func saveNewTask() {
-        var categoryToUse = selectedCategoryName
-        if categoryToUse == "مخصص" {
-            categoryToUse = normalizedCustomCategory
-        }
+        switch selectedPlacement {
+        case .allPrayers:
+            store.addTask(name: normalizedTaskName, score: newTaskScore, toAllPrayersAvailableFrom: selectedDate)
 
-        store.addTask(name: normalizedTaskName, score: newTaskScore, categoryName: categoryToUse)
+        case .singlePrayer:
+            store.addTask(name: normalizedTaskName, score: newTaskScore, toPrayer: selectedPrayerName, availableFrom: selectedDate)
+
+        case .bundle:
+            guard let bundleTarget = selectedBundleTarget else { return }
+            store.addTask(
+                name: normalizedTaskName,
+                score: newTaskScore,
+                toBundle: bundleTarget.bundleName,
+                inCategory: bundleTarget.categoryName,
+                availableFrom: selectedDate
+            )
+
+        case .category:
+            store.addTask(name: normalizedTaskName, score: newTaskScore, toCategory: selectedCategoryName, availableFrom: selectedDate)
+
+        case .customCategory:
+            store.addTask(name: normalizedTaskName, score: newTaskScore, toCategory: normalizedCustomCategory, availableFrom: selectedDate)
+        }
         resetAddTaskForm()
         showAddTaskSheet = false
     }
@@ -263,8 +357,23 @@ struct DailyTasksView: View {
     private func resetAddTaskForm() {
         newTaskName = ""
         newTaskScore = 1
-        selectedCategoryName = store.categories.first?.name ?? ""
+        selectedPlacement = .bundle
+        synchronizeAddTaskSelections()
         customCategoryName = ""
+    }
+
+    private func synchronizeAddTaskSelections() {
+        if selectedPrayerName.isEmpty || !prayerTargets.contains(where: { $0.prayerName == selectedPrayerName }) {
+            selectedPrayerName = prayerTargets.first?.prayerName ?? ""
+        }
+
+        if selectedBundleID.isEmpty || !bundleTargets.contains(where: { $0.id == selectedBundleID }) {
+            selectedBundleID = bundleTargets.first?.id ?? ""
+        }
+
+        if selectedCategoryName.isEmpty || !categoryTargets.contains(selectedCategoryName) {
+            selectedCategoryName = categoryTargets.first ?? "عام"
+        }
     }
 
     private func presentFeedback(_ feedback: TaskActionFeedback) {
@@ -310,11 +419,19 @@ private struct CategorySectionView: View {
     let onTaskAction: (TaskActionFeedback) -> Void
 
     var body: some View {
+        let visibleSubCategories = category.subCategories?.compactMap { subCategory -> SubCategory? in
+            let visibleTasks = subCategory.tasks.filter { store.isTaskActive($0, on: date) }
+            guard !visibleTasks.isEmpty else { return nil }
+            return SubCategory(name: subCategory.name, tasks: visibleTasks)
+        }
+
+        let visibleDirectTasks = category.tasks?.filter { store.isTaskActive($0, on: date) }
+
         VStack(alignment: .leading, spacing: 12) {
             Text(category.name)
                 .font(.headline)
 
-            if let subCategories = category.subCategories {
+            if let subCategories = visibleSubCategories {
                 ForEach(subCategories, id: \.name) { subCategory in
                     if subCategory.tasks.allSatisfy({ store.isPrayerTask($0) }) {
                         PrayerCompactGroupList(
@@ -335,7 +452,7 @@ private struct CategorySectionView: View {
                 }
             }
 
-            if let tasks = category.tasks {
+            if let tasks = visibleDirectTasks {
                 TaskGroupSection(tasks: tasks, store: store, date: date, onTaskAction: onTaskAction)
             }
         }
@@ -603,6 +720,7 @@ private struct TaskRow: View {
     let date: Date
     let onTaskAction: (TaskActionFeedback) -> Void
     @State private var showDeleteConfirmation = false
+    @State private var showEditSheet = false
 
     var body: some View {
         let isCompleted = store.isTaskCompleted(task, on: date)
@@ -666,6 +784,12 @@ private struct TaskRow: View {
             }
 
             Menu {
+                Button {
+                    showEditSheet = true
+                } label: {
+                    Label("تعديل المهمة", systemImage: "square.and.pencil")
+                }
+
                 Button(role: .destructive) {
                     showDeleteConfirmation = true
                 } label: {
@@ -691,6 +815,9 @@ private struct TaskRow: View {
         } message: {
             Text("سيتم حذف المهمة من جميع القوائم والتسجيلات المحفوظة.")
         }
+        .sheet(isPresented: $showEditSheet) {
+            TaskEditorSheet(task: task, store: store)
+        }
     }
 }
 
@@ -699,6 +826,8 @@ private struct CompletedTaskRow: View {
     @ObservedObject var store: TaskStore
     let date: Date
     let onTaskAction: (TaskActionFeedback) -> Void
+    @State private var showEditSheet = false
+    @State private var showDeleteConfirmation = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -732,6 +861,25 @@ private struct CompletedTaskRow: View {
             }
             .buttonStyle(.bordered)
             .tint(.secondary)
+
+            Menu {
+                Button {
+                    showEditSheet = true
+                } label: {
+                    Label("تعديل المهمة", systemImage: "square.and.pencil")
+                }
+
+                Button(role: .destructive) {
+                    showDeleteConfirmation = true
+                } label: {
+                    Label("حذف المهمة", systemImage: "trash")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.body)
+                    .foregroundColor(.secondary)
+            }
+            .menuStyle(.button)
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
@@ -739,6 +887,77 @@ private struct CompletedTaskRow: View {
             RoundedRectangle(cornerRadius: 10)
                 .fill(AamalTheme.emerald.opacity(0.08))
         )
+        .confirmationDialog(
+            "حذف المهمة",
+            isPresented: $showDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("حذف نهائيًا", role: .destructive) {
+                store.removeTask(taskId: task.id)
+            }
+            Button("إلغاء", role: .cancel) {}
+        } message: {
+            Text("سيتم حذف المهمة من جميع القوائم والتسجيلات المحفوظة.")
+        }
+        .sheet(isPresented: $showEditSheet) {
+            TaskEditorSheet(task: task, store: store)
+        }
+    }
+}
+
+private struct TaskEditorSheet: View {
+    let task: Task
+    @ObservedObject var store: TaskStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var draftName: String
+    @State private var draftScore: Int
+
+    init(task: Task, store: TaskStore) {
+        self.task = task
+        self.store = store
+        _draftName = State(initialValue: task.name)
+        _draftScore = State(initialValue: task.score)
+    }
+
+    private var normalizedName: String {
+        draftName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(header: Text("تفاصيل المهمة")) {
+                    TextField("اسم المهمة", text: $draftName)
+
+                    Stepper(value: $draftScore, in: 1...20) {
+                        Text("الدرجة: \(draftScore)")
+                    }
+                }
+
+                Section(header: Text("التصنيف الحالي")) {
+                    Text(task.category)
+                        .foregroundColor(.secondary)
+                }
+            }
+            .navigationTitle("تعديل المهمة")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("حفظ") {
+                        if store.updateTask(taskId: task.id, name: normalizedName, score: draftScore) {
+                            dismiss()
+                        }
+                    }
+                    .disabled(normalizedName.isEmpty)
+                }
+
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("إلغاء") {
+                        dismiss()
+                    }
+                }
+            }
+        }
     }
 }
 
