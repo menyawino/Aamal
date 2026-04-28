@@ -67,6 +67,7 @@ final class TaskStore: ObservableObject {
     @Published private(set) var level: Int = 1
     @Published private(set) var streak: Int = 0
     @Published private(set) var badges: [String] = []
+    @Published private(set) var scoreLog: [ScoreLogEntry] = []
     @Published private(set) var progressHistory: [ProgressPoint] = []
     @Published private(set) var completedLog: [UUID: Set<Date>] = [:]
     @Published private(set) var tasbihCounts: [String: Int] = [:]
@@ -76,10 +77,11 @@ final class TaskStore: ObservableObject {
     @Published private(set) var quranRevisionPlan = QuranRevisionPlan()
 
     private let xpPerLevel: Int = 20
+    private let maxScoreLogEntries: Int = 250
     private let defaultCategories: [TaskCategory]
     private var deletedSeededTaskIDs: Set<UUID> = []
     private var lastCompletionDate: Date?
-    private let userDefaults = UserDefaults.standard
+    private let userDefaults: UserDefaults
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
     private var latestPrayerTimings: PrayerTimings?
@@ -92,6 +94,7 @@ final class TaskStore: ObservableObject {
         static let level = "level"
         static let streak = "streak"
         static let badges = "badges"
+        static let scoreLog = "scoreLog"
         static let progressHistory = "progressHistory"
         static let completedLog = "completedLog"
         static let tasbihCounts = "tasbihCounts"
@@ -102,15 +105,22 @@ final class TaskStore: ObservableObject {
         static let quranRevisionPlan = "quranRevisionPlan"
     }
 
-    init(categories: [TaskCategory] = [dailyCategory, fridayTasks]) {
+    init(
+        categories: [TaskCategory] = [dailyCategory, fridayTasks],
+        userDefaults: UserDefaults = .standard,
+        requestsNotificationPermission: Bool = true
+    ) {
         self.defaultCategories = categories
         self.categories = categories
+        self.userDefaults = userDefaults
         loadData()
         removeLegacyRamadanData()
         pruneCompletedLog()
         checkAndResetDaily()
         recordProgressSnapshot(for: Date())
-        requestNotificationPermission()
+        if requestsNotificationPermission {
+            requestNotificationPermission()
+        }
     }
 
     // MARK: - Data Persistence
@@ -154,6 +164,10 @@ final class TaskStore: ObservableObject {
         if level == 0 { level = 1 }
         streak = userDefaults.integer(forKey: Keys.streak)
         badges = userDefaults.stringArray(forKey: Keys.badges) ?? []
+        if let scoreLogData = userDefaults.data(forKey: Keys.scoreLog),
+           let decoded = try? decoder.decode([ScoreLogEntry].self, from: scoreLogData) {
+            scoreLog = Array(decoded.suffix(maxScoreLogEntries))
+        }
         dailyDuaIndex = userDefaults.integer(forKey: Keys.dailyDuaIndex)
 
         if let lastCompletionData = userDefaults.object(forKey: Keys.lastCompletionDate) as? Date {
@@ -215,6 +229,9 @@ final class TaskStore: ObservableObject {
         userDefaults.set(level, forKey: Keys.level)
         userDefaults.set(streak, forKey: Keys.streak)
         userDefaults.set(badges, forKey: Keys.badges)
+        if let scoreLogData = try? encoder.encode(scoreLog) {
+            userDefaults.set(scoreLogData, forKey: Keys.scoreLog)
+        }
         userDefaults.set(dailyDuaIndex, forKey: Keys.dailyDuaIndex)
         userDefaults.set(lastResetDate, forKey: Keys.lastResetDate)
         userDefaults.set(lastCompletionDate, forKey: Keys.lastCompletionDate)
@@ -439,6 +456,14 @@ final class TaskStore: ObservableObject {
         }
     }
 
+    var quranMarkedWeakRubs: [QuranRubReference] {
+        quranRevisionPlan.weakRubIndices.map(QuranRubReference.init(globalRubIndex:))
+    }
+
+    var todaysAdaptiveQuranPlan: QuranAdaptiveDailyPlan {
+        adaptiveQuranPlan(for: Date())
+    }
+
     var todaysQuranRevision: [QuranRubReference] {
         quranRevisionAssignment(for: Date())
     }
@@ -498,7 +523,12 @@ final class TaskStore: ObservableObject {
 
         compensationProgress.compensatedPrayerCounts[prayer.rawValue, default: 0] += loggedCount
         updateCompensationStreak(on: date)
-        grantXP(loggedCount * 3)
+        grantXP(
+            loggedCount * 3,
+            reason: .compensatedPrayer,
+            note: "قضاء \(prayer.arabicName) ×\(loggedCount)",
+            on: date
+        )
         awardCompensationBadgesIfNeeded()
         recordProgressSnapshot(for: date)
         return loggedCount
@@ -512,27 +542,66 @@ final class TaskStore: ObservableObject {
 
         compensationProgress.compensatedFastingDays += loggedCount
         updateCompensationStreak(on: date)
-        grantXP(loggedCount * 12)
+        grantXP(
+            loggedCount * 12,
+            reason: .compensatedFasting,
+            note: "قضاء صيام ×\(loggedCount)",
+            on: date
+        )
         awardCompensationBadgesIfNeeded()
         recordProgressSnapshot(for: date)
         return loggedCount
     }
 
     func configureQuranRevisionPlan(juzCount: Int, additionalHizb: Int, additionalRub: Int, dailyGoalRubs: Int) {
+        let currentCapacities = Dictionary(uniqueKeysWithValues: PrayerCompensationType.allCases.map { prayer in
+            (prayer, quranRevisionPlan.capacity(for: prayer))
+        })
+
+        configureQuranRevisionPlan(
+            juzCount: juzCount,
+            additionalHizb: additionalHizb,
+            additionalRub: additionalRub,
+            dailyGoalRubs: dailyGoalRubs,
+            recentWindowRubs: quranRevisionPlan.recentWindowRubs,
+            newMemorizationTargetRubs: quranRevisionPlan.newMemorizationTargetRubs,
+            prayerCapacities: currentCapacities
+        )
+    }
+
+    func configureQuranRevisionPlan(
+        juzCount: Int,
+        additionalHizb: Int,
+        additionalRub: Int,
+        dailyGoalRubs: Int,
+        recentWindowRubs: Int,
+        newMemorizationTargetRubs: Int,
+        prayerCapacities: [PrayerCompensationType: Int]
+    ) {
         let safeJuz = min(max(0, juzCount), 30)
         let safeHizb = min(max(0, additionalHizb), safeJuz == 30 ? 0 : 1)
         let maxAdditionalRub = safeJuz == 30 && safeHizb == 0 ? 0 : 3
         let safeRub = min(max(0, additionalRub), maxAdditionalRub)
         let totalRubs = min(240, (safeJuz * 8) + (safeHizb * 4) + safeRub)
-        let goal = min(max(1, dailyGoalRubs), max(1, totalRubs == 0 ? 1 : totalRubs))
+        let goal = min(max(1, dailyGoalRubs), max(1, min(totalRubs == 0 ? 12 : totalRubs, 12)))
+        let safeRecentWindow = min(max(1, recentWindowRubs), max(1, min(totalRubs == 0 ? 16 : totalRubs, 16)))
+        let safeNewTarget = min(max(0, newMemorizationTargetRubs), totalRubs >= 240 ? 0 : 2)
+        let normalizedCapacities = Dictionary(uniqueKeysWithValues: PrayerCompensationType.allCases.map { prayer in
+            (prayer.rawValue, max(0, prayerCapacities[prayer] ?? quranRevisionPlan.capacity(for: prayer)))
+        })
+        let preservesProgress = totalRubs == quranRevisionPlan.totalMemorizedRubs
 
         quranRevisionPlan = QuranRevisionPlan(
             totalMemorizedRubs: totalRubs,
             dailyGoalRubs: goal,
-            startDate: Date(),
-            completedDates: [],
-            lastCompletionDate: nil,
-            streak: 0
+            recentWindowRubs: safeRecentWindow,
+            newMemorizationTargetRubs: safeNewTarget,
+            weakRubIndices: quranRevisionPlan.weakRubIndices.filter { $0 <= totalRubs },
+            prayerCapacities: normalizedCapacities,
+            startDate: preservesProgress ? quranRevisionPlan.startDate : Date(),
+            completedDates: preservesProgress ? quranRevisionPlan.completedDates : [],
+            lastCompletionDate: preservesProgress ? quranRevisionPlan.lastCompletionDate : nil,
+            streak: preservesProgress ? quranRevisionPlan.streak : 0
         )
         recordProgressSnapshot(for: Date())
     }
@@ -551,10 +620,35 @@ final class TaskStore: ObservableObject {
         quranRevisionPlan.completedDates.append(dayKey)
         quranRevisionPlan.completedDates.sort()
         updateQuranRevisionStreak(on: dayKey)
-        grantXP(quranRevisionPlan.dailyGoalRubs * 6)
+        grantXP(
+            quranRevisionPlan.dailyGoalRubs * 6,
+            reason: .quranRevisionCompleted,
+            note: "إنجاز خطة المراجعة اليومية",
+            on: dayKey
+        )
         awardQuranRevisionBadgesIfNeeded()
         recordProgressSnapshot(for: dayKey)
         return true
+    }
+
+    func isQuranRubMarkedWeak(_ rub: QuranRubReference) -> Bool {
+        quranRevisionPlan.weakRubIndices.contains(rub.globalRubIndex)
+    }
+
+    @discardableResult
+    func markQuranRubWeak(_ rub: QuranRubReference) -> Bool {
+        guard (1...quranRevisionPlan.totalMemorizedRubs).contains(rub.globalRubIndex) else { return false }
+
+        quranRevisionPlan.weakRubIndices.removeAll { $0 == rub.globalRubIndex }
+        quranRevisionPlan.weakRubIndices.insert(rub.globalRubIndex, at: 0)
+        return true
+    }
+
+    @discardableResult
+    func clearQuranRubWeak(_ rub: QuranRubReference) -> Bool {
+        let previousCount = quranRevisionPlan.weakRubIndices.count
+        quranRevisionPlan.weakRubIndices.removeAll { $0 == rub.globalRubIndex }
+        return quranRevisionPlan.weakRubIndices.count != previousCount
     }
 
     func quranRevisionAssignment(for date: Date) -> [QuranRubReference] {
@@ -583,8 +677,697 @@ final class TaskStore: ObservableObject {
         }
     }
 
+    private struct QuranSafetyContext {
+        let recentPool: [QuranRubReference]
+        let recoveryRubs: [QuranRubReference]
+        let recentRubs: [QuranRubReference]
+        let pastRubs: [QuranRubReference]
+        let minimumSafeAyahs: Int
+    }
+
+    private struct QuranRecoveryProfile {
+        let gapDays: Int
+        let completedRecoveryDays: Int
+        let currentDayIndex: Int
+        let active: Bool
+    }
+
+    func adaptiveQuranPlan(for date: Date) -> QuranAdaptiveDailyPlan {
+        let dayKey = dateKey(date)
+        let emptyAssignments = emptyQuranPrayerAssignments()
+
+        guard quranRevisionPlan.totalMemorizedRubs > 0 else {
+            return QuranAdaptiveDailyPlan(
+                date: dayKey,
+                mode: .normal,
+                newMemorization: nil,
+                requiredRevision: [],
+                prayerAssignments: emptyAssignments,
+                guidance: "حدد مقدار المحفوظ أولًا ثم اضبط سعة كل صلاة لتظهر خطة اليوم.",
+                safeguards: [],
+                newMemorizationAllowed: false
+            )
+        }
+
+        guard quranRevisionPlan.totalPrayerCapacityAyahs > 0 else {
+            return QuranAdaptiveDailyPlan(
+                date: dayKey,
+                mode: .normal,
+                newMemorization: nil,
+                requiredRevision: [],
+                prayerAssignments: emptyAssignments,
+                guidance: "أدخل سعة كل صلاة أولًا ليتم توزيع المراجعة على اليوم.",
+                safeguards: [],
+                newMemorizationAllowed: false
+            )
+        }
+
+        let historicalDate = previousDay(before: dayKey)
+        let quranCompliance = quranCompletionRate(forLastDays: 7, until: historicalDate)
+        let recoveryProfile = quranRecoveryProfile(for: dayKey, historicalCompliance: quranCompliance)
+
+        if recoveryProfile.active {
+            return recoveryQuranPlan(for: dayKey, profile: recoveryProfile)
+        }
+
+        let safetyContext = normalQuranSafetyContext(for: dayKey, quranCompliance: quranCompliance)
+        if quranRevisionPlan.totalPrayerCapacityAyahs < safetyContext.minimumSafeAyahs {
+            return reducedSafetyQuranPlan(for: dayKey, context: safetyContext)
+        }
+
+        return standardQuranPlan(for: dayKey, quranCompliance: quranCompliance, context: safetyContext)
+    }
+
     func completion(for category: TaskCategory) -> Double {
         completion(for: [category])
+    }
+
+    private func quranMissedDays(before date: Date) -> Int {
+        let referenceDay = dateKey(quranRevisionPlan.lastCompletionDate ?? quranRevisionPlan.completedDates.last ?? quranRevisionPlan.startDate)
+        let days = Calendar.current.dateComponents([.day], from: referenceDay, to: date).day ?? 0
+        return max(0, days - 1)
+    }
+
+    private func quranCompletionRate(forLastDays days: Int, until date: Date) -> Double {
+        guard days > 0 else { return 0 }
+        let calendar = Calendar.current
+        let dayKey = dateKey(date)
+        let completedCount = (0..<days).compactMap { offset in
+            calendar.date(byAdding: .day, value: -offset, to: dayKey)
+        }.filter { sampledDate in
+            quranRevisionPlan.completedDates.contains(dateKey(sampledDate))
+        }.count
+
+        return Double(completedCount) / Double(days)
+    }
+
+    private func recoveryRubCount(missedDays: Int, quranCompliance: Double, recentWindow: Int) -> Int {
+        guard recentWindow > 0 else { return 0 }
+
+        var count = 0
+        if missedDays > 0 {
+            count = min(2, missedDays)
+        }
+
+        if quranCompliance < 0.45 {
+            count = max(count, min(2, recentWindow))
+        } else if quranCompliance < 0.7 {
+            count = max(count, 1)
+        }
+
+        return min(count, recentWindow)
+    }
+
+    private func normalQuranSafetyContext(for date: Date, quranCompliance: Double) -> QuranSafetyContext {
+        let totalRubs = quranRevisionPlan.totalMemorizedRubs
+        let recentWindow = min(quranRevisionPlan.recentWindowRubs, totalRubs)
+        let missedDays = quranMissedDays(before: date)
+        let recoveryRequired = min(
+            recentWindow,
+            recoveryRubCount(missedDays: missedDays, quranCompliance: quranCompliance, recentWindow: recentWindow)
+        )
+        let baseRevisionRubs = min(max(1, quranRevisionPlan.dailyGoalRubs), totalRubs)
+        let desiredRecentRubs = min(recentWindow, max(1, min(4, (baseRevisionRubs + 1) / 2)))
+        let availablePastRubs = max(0, totalRubs - recentWindow)
+        let pastRequired = min(max(0, baseRevisionRubs - desiredRecentRubs), availablePastRubs)
+        let recentRequired = min(recentWindow, max(1, baseRevisionRubs - pastRequired))
+
+        let recentPool = memorizedRubPool(start: max(1, totalRubs - recentWindow + 1), end: totalRubs)
+        let manualWeakRubs = prioritizedWeakRubs()
+        let manualWeakIDs = Set(manualWeakRubs.map(\.globalRubIndex))
+        let inferredRecoveryRubs = takeLatestUniqueRubs(
+            from: recentPool,
+            count: max(0, recoveryRequired - manualWeakRubs.count),
+            excluding: manualWeakIDs
+        )
+        let recoveryRubs = prioritizedUniqueRubs(manualWeakRubs, inferredRecoveryRubs)
+        let recoveryIDs = Set(recoveryRubs.map(\.globalRubIndex))
+        let recentRubs = takeLatestUniqueRubs(from: recentPool, count: recentRequired, excluding: recoveryIDs)
+        let pastRubs = cycledPastRevisionRubs(count: pastRequired, upperBound: availablePastRubs, on: date, excluding: recoveryIDs)
+
+        let minimumSafeAyahs = max(8, estimatedAyahs(for: recoveryRubs) + estimatedAyahs(for: recentRubs) + estimatedAyahs(for: pastRubs))
+        return QuranSafetyContext(
+            recentPool: recentPool,
+            recoveryRubs: recoveryRubs,
+            recentRubs: recentRubs,
+            pastRubs: pastRubs,
+            minimumSafeAyahs: minimumSafeAyahs
+        )
+    }
+
+    private func standardQuranPlan(for date: Date, quranCompliance: Double, context: QuranSafetyContext) -> QuranAdaptiveDailyPlan {
+        let recoveryIDs = Set(context.recoveryRubs.map(\ .globalRubIndex))
+        let requiredItems = [
+            makePlanSummary(kind: .recovery, rubs: context.recoveryRubs),
+            makePlanSummary(kind: .recentRevision, rubs: context.recentRubs),
+            makePlanSummary(kind: .pastRevision, rubs: context.pastRubs)
+        ].compactMap { $0 }
+
+        let requiredAyahs = requiredItems.reduce(0) { $0 + $1.estimatedAyahs }
+        let requestedNewRubs = min(quranRevisionPlan.newMemorizationTargetRubs, max(0, 240 - quranRevisionPlan.totalMemorizedRubs))
+        let candidateNewRubs = nextNewMemorizationRubs(after: quranRevisionPlan.totalMemorizedRubs, count: requestedNewRubs)
+        let newAllowed = requestedNewRubs > 0
+            && quranCompliance >= 0.6
+            && quranRevisionPlan.totalPrayerCapacityAyahs >= requiredAyahs + estimatedAyahs(for: candidateNewRubs)
+
+        let remainingCapacity = quranRevisionPlan.totalPrayerCapacityAyahs - requiredAyahs
+        let reinforcementExclusions = recoveryIDs.union(context.recentRubs.map(\ .globalRubIndex))
+        let reinforcementRubs = remainingCapacity >= 8
+            ? takeLatestUniqueRubs(from: context.recentPool, count: 1, excluding: reinforcementExclusions)
+            : []
+
+        let slices = pageSlices(for: context.recoveryRubs, kind: .recovery)
+            + pageSlices(for: context.recentRubs, kind: .recentRevision)
+            + pageSlices(for: context.pastRubs, kind: .pastRevision)
+            + pageSlices(for: reinforcementRubs, kind: .reinforcement)
+
+        return QuranAdaptiveDailyPlan(
+            date: date,
+            mode: .normal,
+            newMemorization: newAllowed ? makePlanSummary(kind: .newMemorization, rubs: candidateNewRubs) : nil,
+            requiredRevision: requiredItems,
+            prayerAssignments: distributeQuranSlices(slices),
+            guidance: newAllowed
+                ? "ابدأ بالأصعب في الفجر، ثم نفذ بقية التوزيع كما هو موضح."
+                : "اليوم موجه للمراجعة فقط حتى تبقى السلامة مرتفعة قبل فتح الجديد من جديد.",
+            safeguards: [
+                "إذا هبطت المراجعة عن مستوى الأمان يتوقف الجديد تلقائيًا.",
+                "المقاطع الضعيفة تُقدَّم دائمًا قبل التوسعة.",
+                "لا يتراكم عليك تعويض مفتوح من الأيام السابقة."
+            ],
+            newMemorizationAllowed: newAllowed
+        )
+    }
+
+    private func reducedSafetyQuranPlan(for date: Date, context: QuranSafetyContext) -> QuranAdaptiveDailyPlan {
+        let activePrayerCapacities = PrayerCompensationType.allCases
+            .map { prayer in (prayer, quranRevisionPlan.capacity(for: prayer)) }
+            .filter { $0.1 > 0 }
+
+        let availablePastRubs = max(0, quranRevisionPlan.totalMemorizedRubs - min(quranRevisionPlan.recentWindowRubs, quranRevisionPlan.totalMemorizedRubs))
+        let oldestPastPool = memorizedRubPool(start: 1, end: availablePastRubs)
+
+        var requiredItems: [QuranPlanSummaryItem] = []
+        var slices: [QuranPlanPageSlice] = []
+        var capacityCursor = 0
+
+        if !context.recoveryRubs.isEmpty, capacityCursor < activePrayerCapacities.count {
+            let quota = activePrayerCapacities[capacityCursor].1
+            let recoverySlices = quotaPageSlices(from: context.recoveryRubs, kind: .recovery, totalAyahs: quota, prioritizeLatestPages: true)
+            slices.append(contentsOf: recoverySlices)
+            if let item = makePlanSummary(
+                kind: .recovery,
+                slices: recoverySlices,
+                quantityOverrideText: "\(quota) آية"
+            ) {
+                requiredItems.append(item)
+            }
+            capacityCursor += 1
+        }
+
+        if capacityCursor < activePrayerCapacities.count {
+            let quota = activePrayerCapacities[capacityCursor].1
+            let recentSource = context.recentRubs.isEmpty ? context.recentPool : context.recentRubs
+            let recentSlices = quotaPageSlices(from: recentSource, kind: .recentRevision, totalAyahs: quota, prioritizeLatestPages: true)
+            slices.append(contentsOf: recentSlices)
+            if let item = makePlanSummary(
+                kind: .recentRevision,
+                slices: recentSlices,
+                quantityOverrideText: "\(quota) آية"
+            ) {
+                requiredItems.append(item)
+            }
+            capacityCursor += 1
+        }
+
+        let remainingPastQuota = activePrayerCapacities.dropFirst(capacityCursor).reduce(0) { $0 + $1.1 }
+        if remainingPastQuota > 0 {
+            let pastSource = oldestPastPool.isEmpty ? context.pastRubs : oldestPastPool
+            let pastSlices = quotaPageSlices(from: pastSource, kind: .pastRevision, totalAyahs: remainingPastQuota)
+            slices.append(contentsOf: pastSlices)
+            if let item = makePlanSummary(
+                kind: .pastRevision,
+                slices: pastSlices,
+                quantityOverrideText: "\(remainingPastQuota) آية"
+            ) {
+                requiredItems.append(item)
+            }
+        }
+
+        return QuranAdaptiveDailyPlan(
+            date: date,
+            mode: .reducedSafety,
+            newMemorization: nil,
+            requiredRevision: requiredItems,
+            prayerAssignments: distributeQuranSlices(slices),
+            guidance: "اليوم محدود بالسعة لا بالتقصير، لذلك تحولت الخطة إلى حد أدنى يحمي المحفوظ بدل أن يرهقك بحمل غير واقعي.",
+            safeguards: [
+                "لا توجد رسالة لوم أو عقوبة عند انخفاض السعة.",
+                "الجديد متوقف اليوم تلقائيًا حتى لا يضعف المحفوظ.",
+                "الغد لا يرث تعويضًا متضخمًا؛ العودة تكون تدريجية فقط."
+            ],
+            newMemorizationAllowed: false
+        )
+    }
+
+    private func recoveryQuranPlan(for date: Date, profile: QuranRecoveryProfile) -> QuranAdaptiveDailyPlan {
+        let totalRubs = quranRevisionPlan.totalMemorizedRubs
+        let recentWindow = min(quranRevisionPlan.recentWindowRubs, totalRubs)
+        let atRiskPool = memorizedRubPool(start: max(1, totalRubs - 7), end: totalRubs)
+        let recentPool = memorizedRubPool(start: max(1, totalRubs - recentWindow + 1), end: totalRubs)
+        let pastPool = memorizedRubPool(start: 1, end: max(0, totalRubs - recentWindow))
+        let manualWeakRubs = prioritizedWeakRubs()
+        let forgottenSource = prioritizedUniqueRubs(manualWeakRubs, atRiskPool)
+        let recoveryIDs = Set(forgottenSource.map(\.globalRubIndex))
+        let recentSource = recentPool.filter { !recoveryIDs.contains($0.globalRubIndex) }
+        let pastSource = (pastPool.isEmpty ? recentSource : pastPool).filter { !recoveryIDs.contains($0.globalRubIndex) }
+
+        let isReentry = profile.currentDayIndex <= 3
+        let baseForgottenTarget = 10
+        let baseRecentTarget = isReentry ? 10 : 0
+        let basePastTarget = isReentry
+            ? 32
+            : min(80, 40 + max(0, profile.currentDayIndex - 4) * 8)
+
+        var remainingCapacity = quranRevisionPlan.totalPrayerCapacityAyahs
+        let forgottenQuota = min(baseForgottenTarget, remainingCapacity)
+        remainingCapacity -= forgottenQuota
+        let recentQuota = min(baseRecentTarget, remainingCapacity)
+        remainingCapacity -= recentQuota
+        let pastQuota = min(basePastTarget, remainingCapacity)
+
+        let forgottenSlices = quotaPageSlices(from: forgottenSource, kind: .recovery, totalAyahs: forgottenQuota, prioritizeLatestPages: true)
+        let recentSlices = quotaPageSlices(from: recentSource, kind: .recentRevision, totalAyahs: recentQuota, prioritizeLatestPages: true)
+        let pastSlices = quotaPageSlices(from: pastSource.isEmpty ? recentSource : pastSource, kind: .pastRevision, totalAyahs: pastQuota)
+
+        var requiredItems: [QuranPlanSummaryItem] = []
+        if let forgottenItem = makePlanSummary(
+            kind: .recovery,
+            slices: forgottenSlices,
+            quantityOverrideText: "\(forgottenQuota) آية"
+        ) {
+            requiredItems.append(forgottenItem)
+        }
+        if let recentItem = makePlanSummary(
+            kind: .recentRevision,
+            slices: recentSlices,
+            quantityOverrideText: recentQuota > 0 ? "\(recentQuota) آية" : nil
+        ) {
+            requiredItems.append(recentItem)
+        }
+        if let pastItem = makePlanSummary(
+            kind: .pastRevision,
+            slices: pastSlices,
+            quantityOverrideText: recoveryPastQuantityText(for: pastQuota)
+        ) {
+            requiredItems.append(pastItem)
+        }
+
+        return QuranAdaptiveDailyPlan(
+            date: date,
+            mode: isReentry ? .recoveryReentry : .recoveryRestabilization,
+            newMemorization: nil,
+            requiredRevision: requiredItems,
+            prayerAssignments: distributeQuranSlices(forgottenSlices + recentSlices + pastSlices),
+            guidance: isReentry
+                ? "بعد الانقطاع لا نعود إلى الحجم السابق مباشرة؛ نبدأ بخطة قصيرة تعيد الثقة وتثبت آخر المواضع المتأثرة."
+                : "العودة الآن تدريجية: جرعة يومية ثابتة للضعيف مع رفع المراجعة القديمة خطوة بعد خطوة حتى تستقر الخطة من جديد.",
+            safeguards: isReentry
+                ? [
+                    "لا يوجد حمل تعويض ضخم عن الأيام الفائتة.",
+                    "الجديد متوقف حتى تعود أيام الثبات المطلوبة.",
+                    "لا يُعامل كل المحفوظ كضعيف؛ التركيز فقط على آخر النطاق المتأثر."
+                ]
+                : [
+                    "رفع المراجعة يتم تدريجيًا لا عقابيًا.",
+                    "الضعيف يبقى حاضرًا يوميًا بجرعة صغيرة ثابتة.",
+                    "الجديد لا يعود إلا بعد سلسلة ثبات واضحة وعدم توسع نطاق الضعف."
+                ],
+            newMemorizationAllowed: false
+        )
+    }
+
+    private func quranRecoveryProfile(for date: Date, historicalCompliance: Double) -> QuranRecoveryProfile {
+        let lapseThresholdDays = 3
+        let unlockConsistencyDays = 7
+        let missedDays = quranMissedDays(before: date)
+
+        if missedDays >= lapseThresholdDays {
+            return QuranRecoveryProfile(gapDays: missedDays, completedRecoveryDays: 0, currentDayIndex: 1, active: true)
+        }
+
+        let calendar = Calendar.current
+        let completedBeforeDate = quranRevisionPlan.completedDates.filter { $0 < date }.sorted()
+        let completedSet = Set(completedBeforeDate)
+        var cursor = previousDay(before: date)
+        var runLength = 0
+
+        while completedSet.contains(cursor) {
+            runLength += 1
+            cursor = previousDay(before: cursor)
+        }
+
+        guard runLength > 0 else {
+            return QuranRecoveryProfile(gapDays: 0, completedRecoveryDays: 0, currentDayIndex: 0, active: false)
+        }
+
+        guard let lastCompleted = completedBeforeDate.last,
+              let runStart = calendar.date(byAdding: .day, value: -(runLength - 1), to: lastCompleted) else {
+            return QuranRecoveryProfile(gapDays: 0, completedRecoveryDays: 0, currentDayIndex: 0, active: false)
+        }
+
+        let anchorBeforeRun = completedBeforeDate.last(where: { $0 < runStart }) ?? quranRevisionPlan.startDate
+        let gapDaysBeforeRun = max(0, (calendar.dateComponents([.day], from: anchorBeforeRun, to: runStart).day ?? 0) - 1)
+        let recoveryUnlocked = runLength >= unlockConsistencyDays && historicalCompliance >= 0.85
+        let active = gapDaysBeforeRun >= lapseThresholdDays && !recoveryUnlocked
+
+        return QuranRecoveryProfile(
+            gapDays: gapDaysBeforeRun,
+            completedRecoveryDays: runLength,
+            currentDayIndex: active ? runLength + 1 : 0,
+            active: active
+        )
+    }
+
+    private func memorizedRubPool(start: Int, end: Int) -> [QuranRubReference] {
+        guard start <= end else { return [] }
+        return (start...end).map { QuranRubReference(globalRubIndex: $0) }
+    }
+
+    private func prioritizedWeakRubs(excluding excluded: Set<Int> = []) -> [QuranRubReference] {
+        quranRevisionPlan.weakRubIndices.compactMap { rubIndex in
+            guard !excluded.contains(rubIndex), (1...quranRevisionPlan.totalMemorizedRubs).contains(rubIndex) else {
+                return nil
+            }
+            return QuranRubReference(globalRubIndex: rubIndex)
+        }
+    }
+
+    private func prioritizedUniqueRubs(_ groups: [QuranRubReference]...) -> [QuranRubReference] {
+        var seen: Set<Int> = []
+        var rubs: [QuranRubReference] = []
+
+        for group in groups {
+            for rub in group where !seen.contains(rub.globalRubIndex) {
+                seen.insert(rub.globalRubIndex)
+                rubs.append(rub)
+            }
+        }
+
+        return rubs
+    }
+
+    private func takeLatestUniqueRubs(
+        from pool: [QuranRubReference],
+        count: Int,
+        excluding excluded: Set<Int> = []
+    ) -> [QuranRubReference] {
+        guard count > 0 else { return [] }
+
+        var selection: [QuranRubReference] = []
+        for rub in pool.reversed() where !excluded.contains(rub.globalRubIndex) {
+            selection.append(rub)
+            if selection.count == count {
+                break
+            }
+        }
+
+        return selection.sorted { $0.globalRubIndex < $1.globalRubIndex }
+    }
+
+    private func takeEarliestUniqueRubs(
+        from pool: [QuranRubReference],
+        count: Int,
+        excluding excluded: Set<Int> = []
+    ) -> [QuranRubReference] {
+        guard count > 0 else { return [] }
+
+        var selection: [QuranRubReference] = []
+        for rub in pool where !excluded.contains(rub.globalRubIndex) {
+            selection.append(rub)
+            if selection.count == count {
+                break
+            }
+        }
+
+        return selection
+    }
+
+    private func cycledPastRevisionRubs(
+        count: Int,
+        upperBound: Int,
+        on date: Date,
+        excluding excluded: Set<Int> = []
+    ) -> [QuranRubReference] {
+        guard count > 0, upperBound > 0 else { return [] }
+
+        let completedCycleCount = quranRevisionPlan.completedDates.filter { $0 < date }.count
+        let startIndex = (completedCycleCount * max(1, count)) % upperBound
+
+        var rubs: [QuranRubReference] = []
+        let availableCount = max(0, upperBound - excluded.filter { $0 <= upperBound }.count)
+        let targetCount = min(count, availableCount)
+        var offset = 0
+        var visited = 0
+
+        while rubs.count < targetCount && visited < upperBound {
+            let index = ((startIndex + offset) % upperBound) + 1
+            if !excluded.contains(index) {
+                rubs.append(QuranRubReference(globalRubIndex: index))
+            }
+            offset += 1
+            visited += 1
+        }
+
+        return rubs
+    }
+
+    private func nextNewMemorizationRubs(after totalMemorizedRubs: Int, count: Int) -> [QuranRubReference] {
+        guard count > 0 else { return [] }
+        let availableCount = min(count, max(0, 240 - totalMemorizedRubs))
+        guard availableCount > 0 else { return [] }
+
+        return (1...availableCount).map { offset in
+            QuranRubReference(globalRubIndex: totalMemorizedRubs + offset)
+        }
+    }
+
+    private func makePlanSummary(kind: QuranPlanSegmentKind, rubs: [QuranRubReference]) -> QuranPlanSummaryItem? {
+        guard !rubs.isEmpty else { return nil }
+        return QuranPlanSummaryItem(kind: kind, rubs: rubs, estimatedAyahs: estimatedAyahs(for: rubs))
+    }
+
+    private func makePlanSummary(
+        kind: QuranPlanSegmentKind,
+        slices: [QuranPlanPageSlice],
+        quantityOverrideText: String? = nil
+    ) -> QuranPlanSummaryItem? {
+        guard !slices.isEmpty else { return nil }
+        return QuranPlanSummaryItem(
+            kind: kind,
+            rubs: orderedUniqueRubs(from: slices),
+            estimatedAyahs: slices.reduce(0) { $0 + $1.estimatedAyahs },
+            quantityOverrideText: quantityOverrideText,
+            rangeOverrideText: quranSliceRangeText(slices)
+        )
+    }
+
+    private func estimatedAyahs(for rubs: [QuranRubReference]) -> Int {
+        rubs.reduce(0) { partial, rub in
+            partial + estimatedAyahs(for: rub)
+        }
+    }
+
+    private func estimatedAyahs(for rub: QuranRubReference) -> Int {
+        guard let metadata = rub.metadata else { return 20 }
+        return max(8, ((metadata.endPage - metadata.startPage) + 1) * 8)
+    }
+
+    private func pageSlices(for rubs: [QuranRubReference], kind: QuranPlanSegmentKind) -> [QuranPlanPageSlice] {
+        rubs.flatMap { rub in
+            guard let metadata = rub.metadata else {
+                return [
+                    QuranPlanPageSlice(
+                        kind: kind,
+                        rub: rub,
+                        startPage: max(1, rub.globalRubIndex),
+                        endPage: max(1, rub.globalRubIndex),
+                        estimatedAyahs: estimatedAyahs(for: rub)
+                    )
+                ]
+            }
+
+            return Array(metadata.startPage...metadata.endPage).map { page in
+                QuranPlanPageSlice(
+                    kind: kind,
+                    rub: rub,
+                    startPage: page,
+                    endPage: page,
+                    estimatedAyahs: 8
+                )
+            }
+        }
+    }
+
+    private func quotaPageSlices(
+        from rubs: [QuranRubReference],
+        kind: QuranPlanSegmentKind,
+        totalAyahs: Int,
+        prioritizeLatestPages: Bool = false
+    ) -> [QuranPlanPageSlice] {
+        guard totalAyahs > 0 else { return [] }
+
+        var pageUnits: [(rub: QuranRubReference, page: Int)] = []
+        for rub in rubs {
+            if let metadata = rub.metadata {
+                for page in metadata.startPage...metadata.endPage {
+                    pageUnits.append((rub: rub, page: page))
+                }
+            } else {
+                pageUnits.append((rub: rub, page: max(1, rub.globalRubIndex)))
+            }
+        }
+
+        let orderedUnits = prioritizeLatestPages ? pageUnits.reversed() : pageUnits
+        var remainingAyahs = totalAyahs
+        var slices: [QuranPlanPageSlice] = []
+
+        for unit in orderedUnits where remainingAyahs > 0 {
+            let ayahQuota = min(8, remainingAyahs)
+            slices.append(
+                QuranPlanPageSlice(
+                    kind: kind,
+                    rub: unit.rub,
+                    startPage: unit.page,
+                    endPage: unit.page,
+                    estimatedAyahs: ayahQuota
+                )
+            )
+            remainingAyahs -= ayahQuota
+        }
+
+        return prioritizeLatestPages ? slices.reversed() : slices
+    }
+
+    private func distributeQuranSlices(_ slices: [QuranPlanPageSlice]) -> [QuranPrayerAssignment] {
+        var queue = slices
+        var assignments: [QuranPrayerAssignment] = []
+
+        for prayer in PrayerCompensationType.allCases {
+            let capacity = quranRevisionPlan.capacity(for: prayer)
+            guard capacity > 0 else {
+                assignments.append(
+                    QuranPrayerAssignment(prayer: prayer, capacityAyahs: 0, assignedAyahs: 0, segments: [])
+                )
+                continue
+            }
+
+            var assignedSegments: [QuranPlanPageSlice] = []
+            var assignedAyahs = 0
+
+            while !queue.isEmpty && assignedAyahs < capacity {
+                let next = queue.removeFirst()
+                let remainingCapacity = capacity - assignedAyahs
+
+                if next.estimatedAyahs <= remainingCapacity {
+                    assignedSegments.append(next)
+                    assignedAyahs += next.estimatedAyahs
+                } else {
+                    assignedSegments.append(
+                        QuranPlanPageSlice(
+                            kind: next.kind,
+                            rub: next.rub,
+                            startPage: next.startPage,
+                            endPage: next.endPage,
+                            estimatedAyahs: remainingCapacity
+                        )
+                    )
+                    assignedAyahs += remainingCapacity
+                    queue.insert(
+                        QuranPlanPageSlice(
+                            kind: next.kind,
+                            rub: next.rub,
+                            startPage: next.startPage,
+                            endPage: next.endPage,
+                            estimatedAyahs: next.estimatedAyahs - remainingCapacity
+                        ),
+                        at: 0
+                    )
+                    break
+                }
+            }
+
+            assignments.append(
+                QuranPrayerAssignment(
+                    prayer: prayer,
+                    capacityAyahs: capacity,
+                    assignedAyahs: assignedAyahs,
+                    segments: assignedSegments
+                )
+            )
+        }
+
+        if !queue.isEmpty, var lastAssignment = assignments.popLast() {
+            lastAssignment = QuranPrayerAssignment(
+                prayer: lastAssignment.prayer,
+                capacityAyahs: lastAssignment.capacityAyahs,
+                assignedAyahs: lastAssignment.assignedAyahs + queue.reduce(0) { $0 + $1.estimatedAyahs },
+                segments: lastAssignment.segments + queue
+            )
+            assignments.append(lastAssignment)
+        }
+
+        return assignments
+    }
+
+    private func orderedUniqueRubs(from slices: [QuranPlanPageSlice]) -> [QuranRubReference] {
+        var seen: Set<Int> = []
+        var rubs: [QuranRubReference] = []
+
+        for slice in slices where !seen.contains(slice.rub.globalRubIndex) {
+            seen.insert(slice.rub.globalRubIndex)
+            rubs.append(slice.rub)
+        }
+
+        return rubs
+    }
+
+    private func quranSliceRangeText(_ slices: [QuranPlanPageSlice]) -> String {
+        guard let first = slices.first, let last = slices.last else { return "" }
+        if first.startPage == last.endPage {
+            return "\(first.rub.detailedTitle) • صفحة \(first.startPage)"
+        }
+        if first.rub == last.rub {
+            return "\(first.rub.detailedTitle) • من صفحة \(first.startPage) إلى صفحة \(last.endPage)"
+        }
+        return "من \(first.rub.detailedTitle) صفحة \(first.startPage) إلى \(last.rub.detailedTitle) صفحة \(last.endPage)"
+    }
+
+    private func recoveryPastQuantityText(for ayahs: Int) -> String {
+        guard ayahs > 0 else { return "" }
+        let pages = Int(ceil(Double(ayahs) / 8.0))
+        if pages >= 10 {
+            return "نحو نصف جزء"
+        }
+        if pages >= 6 {
+            return "نحو ثلث جزء"
+        }
+        return "حوالي \(pages) صفحات"
+    }
+
+    private func emptyQuranPrayerAssignments() -> [QuranPrayerAssignment] {
+        PrayerCompensationType.allCases.map { prayer in
+            QuranPrayerAssignment(
+                prayer: prayer,
+                capacityAyahs: quranRevisionPlan.capacity(for: prayer),
+                assignedAyahs: 0,
+                segments: []
+            )
+        }
+    }
+
+    private func previousDay(before date: Date) -> Date {
+        Calendar.current.date(byAdding: .day, value: -1, to: date) ?? date
     }
 
     func completion(for categories: [TaskCategory], on date: Date = Date()) -> Double {
@@ -812,9 +1595,14 @@ final class TaskStore: ObservableObject {
             }
 
             if completionCount > 0 {
-                totalXP = max(0, totalXP - (completionCount * removedTask.score))
+                applyXPDelta(
+                    -(completionCount * removedTask.score),
+                    reason: .taskRemoved,
+                    note: "حذف مهمة \(removedTask.name) بعد \(completionCount) تسجيلات",
+                    on: Date(),
+                    effectiveDate: Date()
+                )
             }
-            updateLevel()
         }
         recomputeTaskStreak()
         rebuildRecentProgressHistory()
@@ -954,15 +1742,25 @@ final class TaskStore: ObservableObject {
 
     private func handleCompletionChange(task: Task, wasCompleted: Bool, isNowCompleted: Bool, on date: Date) {
         if !wasCompleted && isNowCompleted {
-            grantXP(task.score)
+            grantXP(
+                task.score,
+                reason: .taskCompleted,
+                note: "إنجاز مهمة \(task.name)",
+                on: date
+            )
             recomputeTaskStreak()
             checkBadges(on: date)
         } else if wasCompleted && !isNowCompleted {
-            totalXP = max(0, totalXP - task.score)
+            applyXPDelta(
+                -task.score,
+                reason: .taskUncompleted,
+                note: "إلغاء تسجيل مهمة \(task.name)",
+                on: Date(),
+                effectiveDate: date
+            )
             recomputeTaskStreak()
         }
 
-        updateLevel()
         recordProgressSnapshot(for: date)
         saveData()
     }
@@ -1022,10 +1820,45 @@ final class TaskStore: ObservableObject {
         badges.append(badge)
     }
 
-    private func grantXP(_ amount: Int) {
-        guard amount > 0 else { return }
-        totalXP += amount
+    private func grantXP(
+        _ amount: Int,
+        reason: ScoreLogReason,
+        note: String,
+        on date: Date
+    ) {
+        applyXPDelta(amount, reason: reason, note: note, on: Date(), effectiveDate: date)
+    }
+
+    private func applyXPDelta(
+        _ delta: Int,
+        reason: ScoreLogReason,
+        note: String,
+        on recordedAt: Date,
+        effectiveDate: Date
+    ) {
+        guard delta != 0 else { return }
+
+        let previousXP = totalXP
+        totalXP = max(0, totalXP + delta)
+
+        let appliedDelta = totalXP - previousXP
+        guard appliedDelta != 0 else { return }
+
         updateLevel()
+        scoreLog.append(
+            ScoreLogEntry(
+                recordedAt: recordedAt,
+                effectiveDate: dateKey(effectiveDate),
+                delta: appliedDelta,
+                balanceAfter: totalXP,
+                reason: reason,
+                note: note
+            )
+        )
+
+        if scoreLog.count > maxScoreLogEntries {
+            scoreLog.removeFirst(scoreLog.count - maxScoreLogEntries)
+        }
     }
 
     func recordProgressSnapshot(for date: Date) {
@@ -1447,8 +2280,13 @@ final class TaskStore: ObservableObject {
         let completionCount = completedLog[oldTask.id]?.count ?? 0
         guard oldTask.score != newTask.score, completionCount > 0 else { return }
         let delta = completionCount * (newTask.score - oldTask.score)
-        totalXP = max(0, totalXP + delta)
-        updateLevel()
+        applyXPDelta(
+            delta,
+            reason: .taskScoreAdjusted,
+            note: "تعديل نقاط مهمة \(newTask.name) بعد \(completionCount) تسجيلات",
+            on: Date(),
+            effectiveDate: Date()
+        )
     }
 
     private func dateKey(_ date: Date) -> Date {

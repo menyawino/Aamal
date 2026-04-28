@@ -6,6 +6,13 @@ struct QuranRevisionView: View {
     @State private var additionalHizb: Int
     @State private var additionalRub: Int
     @State private var dailyGoalRubs: Int
+    @State private var recentWindowRubs: Int
+    @State private var newMemorizationTargetRubs: Int
+    @State private var fajrCapacity: Int
+    @State private var dhuhrCapacity: Int
+    @State private var asrCapacity: Int
+    @State private var maghribCapacity: Int
+    @State private var ishaCapacity: Int
     @State private var feedbackMessage: String = ""
     @State private var showSettingsSheet = false
 
@@ -20,17 +27,32 @@ struct QuranRevisionView: View {
         _additionalHizb = State(initialValue: remainder / 4)
         _additionalRub = State(initialValue: remainder % 4)
         _dailyGoalRubs = State(initialValue: store.quranRevisionPlan.dailyGoalRubs)
+        _recentWindowRubs = State(initialValue: store.quranRevisionPlan.recentWindowRubs)
+        _newMemorizationTargetRubs = State(initialValue: store.quranRevisionPlan.newMemorizationTargetRubs)
+        _fajrCapacity = State(initialValue: store.quranRevisionPlan.capacity(for: .fajr))
+        _dhuhrCapacity = State(initialValue: store.quranRevisionPlan.capacity(for: .dhuhr))
+        _asrCapacity = State(initialValue: store.quranRevisionPlan.capacity(for: .asr))
+        _maghribCapacity = State(initialValue: store.quranRevisionPlan.capacity(for: .maghrib))
+        _ishaCapacity = State(initialValue: store.quranRevisionPlan.capacity(for: .isha))
     }
 
     private var totalDraftRubs: Int {
         min(240, (juzCount * 8) + (additionalHizb * 4) + additionalRub)
     }
 
+    private var todaysPlan: QuranAdaptiveDailyPlan {
+        store.todaysAdaptiveQuranPlan
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(spacing: 16) {
-                    QuranRevisionHeroCard(store: store)
+                    QuranAdaptiveHeroCard(
+                        store: store,
+                        plan: todaysPlan,
+                        openSettingsAction: { showSettingsSheet = true }
+                    )
 
                     if !feedbackMessage.isEmpty {
                         Text(feedbackMessage)
@@ -40,17 +62,29 @@ struct QuranRevisionView: View {
                             .aamalCard()
                     }
 
-                    QuranPlanSummaryCard(
-                        store: store,
-                        openSettingsAction: { showSettingsSheet = true }
-                    )
+                    if let newItem = todaysPlan.newMemorization {
+                        QuranNewMemorizationCard(item: newItem)
+                    }
 
-                    QuranTodayMissionCard(
+                    QuranRequiredRevisionCard(plan: todaysPlan)
+
+                    if !store.quranMarkedWeakRubs.isEmpty {
+                        QuranMarkedWeakCard(
+                            rubs: store.quranMarkedWeakRubs,
+                            clearWeakAction: clearWeakRub
+                        )
+                    }
+
+                    if !todaysPlan.safeguards.isEmpty {
+                        QuranPlanSafeguardsCard(plan: todaysPlan)
+                    }
+
+                    QuranPrayerDistributionCard(
                         store: store,
+                        plan: todaysPlan,
+                        toggleWeakAction: toggleWeakRub,
                         completionAction: markTodayCompleted
                     )
-
-                    QuranUpcomingScheduleCard(assignments: store.upcomingQuranRevisionAssignments)
                 }
                 .padding(.horizontal)
                 .padding(.bottom, 24)
@@ -60,22 +94,29 @@ struct QuranRevisionView: View {
                     Button(action: { showSettingsSheet = true }) {
                         Image(systemName: "slider.horizontal.3")
                     }
-                    .accessibilityLabel("إعدادات المراجعة")
+                    .accessibilityLabel("إعدادات خطة الحفظ")
                 }
             }
             .background(AamalTheme.backgroundGradient.ignoresSafeArea())
-            .navigationTitle("مراجعة القرآن")
+            .navigationTitle("خطة الحفظ")
         }
         .onAppear(perform: syncDraftFromStore)
         .sheet(isPresented: $showSettingsSheet) {
             NavigationStack {
                 ScrollView {
                     VStack(spacing: 16) {
-                        QuranPlanEditorCard(
+                        QuranAdaptiveSettingsCard(
                             juzCount: $juzCount,
                             additionalHizb: $additionalHizb,
                             additionalRub: $additionalRub,
                             dailyGoalRubs: $dailyGoalRubs,
+                            recentWindowRubs: $recentWindowRubs,
+                            newMemorizationTargetRubs: $newMemorizationTargetRubs,
+                            fajrCapacity: $fajrCapacity,
+                            dhuhrCapacity: $dhuhrCapacity,
+                            asrCapacity: $asrCapacity,
+                            maghribCapacity: $maghribCapacity,
+                            ishaCapacity: $ishaCapacity,
                             totalDraftRubs: totalDraftRubs,
                             saveAction: savePlan
                         )
@@ -83,7 +124,7 @@ struct QuranRevisionView: View {
                     .padding()
                 }
                 .background(AamalTheme.backgroundGradient.ignoresSafeArea())
-                .navigationTitle("إعدادات المراجعة")
+                .navigationTitle("إعدادات الخطة")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -105,6 +146,13 @@ struct QuranRevisionView: View {
         additionalHizb = remainder / 4
         additionalRub = remainder % 4
         dailyGoalRubs = store.quranRevisionPlan.dailyGoalRubs
+        recentWindowRubs = store.quranRevisionPlan.recentWindowRubs
+        newMemorizationTargetRubs = store.quranRevisionPlan.newMemorizationTargetRubs
+        fajrCapacity = store.quranRevisionPlan.capacity(for: .fajr)
+        dhuhrCapacity = store.quranRevisionPlan.capacity(for: .dhuhr)
+        asrCapacity = store.quranRevisionPlan.capacity(for: .asr)
+        maghribCapacity = store.quranRevisionPlan.capacity(for: .maghrib)
+        ishaCapacity = store.quranRevisionPlan.capacity(for: .isha)
     }
 
     private func savePlan() {
@@ -113,36 +161,93 @@ struct QuranRevisionView: View {
                 juzCount: juzCount,
                 additionalHizb: additionalHizb,
                 additionalRub: additionalRub,
-                dailyGoalRubs: dailyGoalRubs
+                dailyGoalRubs: dailyGoalRubs,
+                recentWindowRubs: recentWindowRubs,
+                newMemorizationTargetRubs: newMemorizationTargetRubs,
+                prayerCapacities: [
+                    .fajr: fajrCapacity,
+                    .dhuhr: dhuhrCapacity,
+                    .asr: asrCapacity,
+                    .maghrib: maghribCapacity,
+                    .isha: ishaCapacity
+                ]
             )
+
             feedbackMessage = totalDraftRubs == 0
                 ? "تم تصفير الخطة حتى تحدد مقدار المحفوظ."
-                : "تم ضبط خطة المراجعة اليومية على \(dailyGoalRubs) أرباع."
+                : "تم تحديث الخطة اليومية والتوزيع على الصلوات."
         }
+
         syncDraftFromStore()
-            showSettingsSheet = false
+        showSettingsSheet = false
     }
 
     private func markTodayCompleted() {
         let didMark = store.markQuranRevisionCompleted()
         feedbackMessage = didMark
-            ? "أُنجز ورد اليوم وتم احتساب نقاط المراجعة."
-            : "ورد اليوم مسجل مسبقًا أو أن الخطة غير مهيأة بعد."
+            ? "أُنجزت خطة اليوم وتم احتساب نقاط المراجعة."
+            : "خطة اليوم مسجلة مسبقًا أو أن الخطة غير مهيأة بعد."
+    }
+
+    private func toggleWeakRub(_ rub: QuranRubReference) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            if store.isQuranRubMarkedWeak(rub) {
+                feedbackMessage = store.clearQuranRubWeak(rub)
+                    ? "أزيل \(rub.shortTitle) من قائمة الضعيف وسيخرج من الاسترجاع اليدوي."
+                    : "لم يتغير وسم \(rub.shortTitle)."
+            } else {
+                feedbackMessage = store.markQuranRubWeak(rub)
+                    ? "تم وسم \(rub.shortTitle) كموضع ضعيف وسيدخل مباشرة في مسار الاسترجاع."
+                    : "تعذر وسم هذا الموضع كضعيف."
+            }
+        }
+    }
+
+    private func clearWeakRub(_ rub: QuranRubReference) {
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            feedbackMessage = store.clearQuranRubWeak(rub)
+                ? "أزيل \(rub.shortTitle) من قائمة الضعيف."
+                : "هذا الموضع غير موجود أصلًا في قائمة الضعيف."
+        }
     }
 }
 
-private struct QuranRevisionHeroCard: View {
+private struct QuranAdaptiveHeroCard: View {
     @ObservedObject var store: TaskStore
+    let plan: QuranAdaptiveDailyPlan
+    let openSettingsAction: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("خطة اليوم")
+                        .font(.title3)
+                        .fontWeight(.bold)
+                    Label(plan.statusTitle, systemImage: plan.mode.systemImage)
+                        .font(.subheadline)
+                        .foregroundColor(quranModeTint(for: plan.mode))
+                    Text("الهدف: \(plan.goalTitle)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(plan.guidance)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Button(action: openSettingsAction) {
+                    Label("تعديل", systemImage: "slider.horizontal.3")
+                }
+                .buttonStyle(.bordered)
+                .tint(AamalTheme.gold)
+            }
+
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(store.quranRevisionRankTitle)
-                        .font(.title3)
-                        .fontWeight(.bold)
-                    Text(planSummary)
-                        .font(.subheadline)
+                        .font(.headline)
+                    Text(plan.newMemorizationAllowed ? "الحفظ الجديد مفتوح اليوم" : "التوسعة متوقفة اليوم لصالح الحماية والاستعادة")
+                        .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 Spacer()
@@ -160,37 +265,428 @@ private struct QuranRevisionHeroCard: View {
                 .tint(AamalTheme.gold)
 
             HStack {
-                QuranMetricPill(title: "المحفوظ", value: memorizedSummary)
-                QuranMetricPill(title: "هدفك اليومي", value: "\(store.quranRevisionPlan.dailyGoalRubs) ربع")
-                QuranMetricPill(title: "الدورة الحالية", value: "\(Int(store.quranRevisionCompletionRate * 100))٪")
+                QuranMetricPill(title: "المحفوظ", value: quranDescribe(totalRubs: store.quranRevisionPlan.totalMemorizedRubs))
+                QuranMetricPill(title: "حد الأمان", value: "\(store.quranRevisionPlan.dailyGoalRubs) ربع")
+                QuranMetricPill(title: "سعة اليوم", value: "\(store.quranRevisionPlan.totalPrayerCapacityAyahs) آية")
+            }
+        }
+        .aamalCard()
+    }
+}
+
+private struct QuranNewMemorizationCard: View {
+    let item: QuranPlanSummaryItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Label(item.kind.title, systemImage: item.kind.systemImage)
+                    .font(.headline)
+                Spacer()
+                Text(item.quantityText)
+                    .font(.subheadline)
+                    .foregroundColor(AamalTheme.emerald)
+            }
+
+            Text(item.rangeText)
+                .font(.subheadline)
+
+            Text(quranPageSummary(for: item.rubs))
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Text("يُعرض الجديد فقط عندما يكون حمل المراجعة اليومي آمنًا ومناسبًا لسعتك.")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .aamalCardSolid()
+    }
+}
+
+private struct QuranRequiredRevisionCard: View {
+    let plan: QuranAdaptiveDailyPlan
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("المراجعة المطلوبة")
+                .font(.headline)
+
+            Text(subtitle)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            if plan.requiredRevision.isEmpty {
+                Text("اضبط المحفوظ وسعة الصلوات ليظهر الحد الأدنى للمراجعة تلقائيًا.")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(plan.requiredRevision) { item in
+                    HStack(alignment: .top, spacing: 12) {
+                        Image(systemName: item.kind.systemImage)
+                            .foregroundColor(quranTint(for: item.kind))
+                            .frame(width: 20)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(item.kind.title)
+                                .font(.subheadline)
+                                .fontWeight(.semibold)
+                            Text(item.rangeText)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        Spacer()
+
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Text(item.quantityText)
+                                .font(.subheadline)
+                            Text("حوالي \(item.estimatedAyahs) آية")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(12)
+                    .background(quranTint(for: item.kind).opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
             }
         }
         .aamalCard()
     }
 
-    private var memorizedSummary: String {
-        describe(totalRubs: store.quranRevisionPlan.totalMemorizedRubs)
-    }
-
-    private var planSummary: String {
-        if store.quranRevisionPlan.totalMemorizedRubs == 0 {
-            return "حدد مقدار المحفوظ أولًا ليظهر الورد بدقة."
+    private var subtitle: String {
+        switch plan.mode {
+        case .normal:
+            return "هذا هو الحد الأدنى غير القابل للتفاوض قبل أي زيادة جديدة."
+        case .reducedSafety:
+            return "هذه نسخة الوقاية الدنيا لليوم المحدود، هدفها إبقاء الاستدعاء حيًا بلا إرهاق."
+        case .recoveryReentry:
+            return "هذه خطة إعادة الدخول بعد الانقطاع، قصيرة وواضحة لتستعيد الثقة أولًا."
+        case .recoveryRestabilization:
+            return "هذه خطة إعادة التثبيت، ترفع الماضي تدريجيًا مع إبقاء الضعيف حاضرًا يوميًا."
         }
-        return "تدور الخطة على محفوظك بالكامل وتوزعه يوميًا بشكل ثابت."
+    }
+}
+
+private struct QuranPlanSafeguardsCard: View {
+    let plan: QuranAdaptiveDailyPlan
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("ضمانات اليوم")
+                .font(.headline)
+
+            ForEach(Array(plan.safeguards.enumerated()), id: \.offset) { _, safeguard in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "checkmark.shield")
+                        .foregroundColor(quranModeTint(for: plan.mode))
+                        .frame(width: 18)
+                    Text(safeguard)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .aamalCardSolid()
+    }
+}
+
+private struct QuranMarkedWeakCard: View {
+    let rubs: [QuranRubReference]
+    let clearWeakAction: (QuranRubReference) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("المواضع المعلّمة ضعيفة")
+                .font(.headline)
+
+            Text("أي موضع هنا يدخل تلقائيًا في بند الاسترجاع حتى تزيل الوسم يدويًا.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            ForEach(rubs) { rub in
+                HStack(alignment: .top, spacing: 12) {
+                    Image(systemName: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
+                        .foregroundColor(AamalTheme.gold)
+                        .frame(width: 18)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(rub.detailedTitle)
+                            .font(.subheadline)
+                            .fontWeight(.semibold)
+                        Text(rub.spanSummary.isEmpty ? rub.pageSpanText : rub.spanSummary)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    Spacer()
+
+                    Button(action: { clearWeakAction(rub) }) {
+                        Text("إزالة الوسم")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(AamalTheme.emerald)
+                }
+                .padding(12)
+                .background(AamalTheme.gold.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+        }
+        .aamalCard()
+    }
+}
+
+private struct QuranPrayerDistributionCard: View {
+    @ObservedObject var store: TaskStore
+    let plan: QuranAdaptiveDailyPlan
+    let toggleWeakAction: (QuranRubReference) -> Void
+    let completionAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("توزيع المراجعة على الصلوات")
+                .font(.headline)
+
+            Text(prayerSubtitle)
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            ForEach(plan.prayerAssignments) { assignment in
+                QuranPrayerAssignmentCard(
+                    assignment: assignment,
+                    weakRubIDs: weakRubIDs,
+                    toggleWeakAction: toggleWeakAction
+                )
+            }
+
+            Button(action: completionAction) {
+                Text(store.isQuranRevisionCompleted() ? "خطة اليوم مكتملة" : "تسجيل إنجاز خطة اليوم")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(AamalTheme.gold)
+            .disabled(store.isQuranRevisionCompleted() || plan.requiredRevision.isEmpty)
+
+            Text("إكمال الخطة اليوم يمنحك \(store.quranRevisionPlan.dailyGoalRubs * 6) نقطة.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .aamalCardSolid()
     }
 
-    private func describe(totalRubs: Int) -> String {
-        guard totalRubs > 0 else { return "غير محدد" }
-        let juz = totalRubs / 8
-        let remainder = totalRubs % 8
-        let hizb = remainder / 4
-        let rub = remainder % 4
+    private var weakRubIDs: Set<Int> {
+        Set(store.quranMarkedWeakRubs.map(\.globalRubIndex))
+    }
 
-        var parts: [String] = []
-        if juz > 0 { parts.append("\(juz) جزء") }
-        if hizb > 0 { parts.append("\(hizb) حزب") }
-        if rub > 0 { parts.append("\(rub) ربع") }
-        return parts.joined(separator: " + ")
+    private var prayerSubtitle: String {
+        switch plan.mode {
+        case .normal:
+            return "السعة هنا تقريبية بالآيات، والتوزيع يقدم المقاطع الأضعف والأثقل في أول اليوم."
+        case .reducedSafety:
+            return "كل صلاة مفعلة تحمل جرعة قصيرة تحافظ على الاستمرارية بدل إسقاط اليوم كاملًا."
+        case .recoveryReentry, .recoveryRestabilization:
+            return "التوزيع هنا جزء من بروتوكول الاستعادة، لذلك لن يعود مباشرة إلى الحجم المعتاد حتى يثبت المحفوظ."
+        }
+    }
+}
+
+private struct QuranPrayerAssignmentCard: View {
+    let assignment: QuranPrayerAssignment
+    let weakRubIDs: Set<Int>
+    let toggleWeakAction: (QuranRubReference) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label(assignment.prayer.arabicName, systemImage: assignment.prayer.systemImage)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Spacer()
+                Text(assignment.capacityAyahs == 0
+                    ? "غير مفعل"
+                    : "\(assignment.assignedAyahs)/\(assignment.capacityAyahs) آية")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            if condensedSegments.isEmpty {
+                Text(assignment.capacityAyahs == 0
+                    ? "هذه الصلاة غير مفعلة في سعة اليوم."
+                    : "لا يوجد مقطع مخصص هنا اليوم.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                ForEach(condensedSegments) { segment in
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: segment.kind.systemImage)
+                            .foregroundColor(quranTint(for: segment.kind))
+                            .frame(width: 18)
+
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(segment.kind.title)
+                                .font(.caption)
+                                .fontWeight(.semibold)
+                            Text(segment.detailText)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            Button(action: { toggleWeakAction(segment.rub) }) {
+                                Label(
+                                    weakRubIDs.contains(segment.rub.globalRubIndex) ? "إزالة الوسم" : "وسم بالضعف",
+                                    systemImage: weakRubIDs.contains(segment.rub.globalRubIndex) ? "checkmark.circle" : "exclamationmark.triangle"
+                                )
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.mini)
+                            .tint(weakRubIDs.contains(segment.rub.globalRubIndex) ? AamalTheme.emerald : AamalTheme.gold)
+                        }
+
+                        Spacer()
+
+                        Text("~\(segment.estimatedAyahs)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(quranTint(for: assignment.primaryKind ?? .pastRevision).opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var condensedSegments: [QuranPlanPageSlice] {
+        guard let first = assignment.segments.first else { return [] }
+
+        var merged: [QuranPlanPageSlice] = [first]
+        for segment in assignment.segments.dropFirst() {
+            if let last = merged.last,
+               last.kind == segment.kind,
+               last.rub == segment.rub,
+               segment.startPage == last.endPage + 1 {
+                merged.removeLast()
+                merged.append(
+                    QuranPlanPageSlice(
+                        kind: last.kind,
+                        rub: last.rub,
+                        startPage: last.startPage,
+                        endPage: segment.endPage,
+                        estimatedAyahs: last.estimatedAyahs + segment.estimatedAyahs
+                    )
+                )
+            } else {
+                merged.append(segment)
+            }
+        }
+
+        return merged
+    }
+}
+
+private struct QuranAdaptiveSettingsCard: View {
+    @Binding var juzCount: Int
+    @Binding var additionalHizb: Int
+    @Binding var additionalRub: Int
+    @Binding var dailyGoalRubs: Int
+    @Binding var recentWindowRubs: Int
+    @Binding var newMemorizationTargetRubs: Int
+    @Binding var fajrCapacity: Int
+    @Binding var dhuhrCapacity: Int
+    @Binding var asrCapacity: Int
+    @Binding var maghribCapacity: Int
+    @Binding var ishaCapacity: Int
+    let totalDraftRubs: Int
+    let saveAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("إعداد خطة الحفظ")
+                .font(.headline)
+
+            Text("هذه الإعدادات تحدد حد الأمان اليومي، نافذة السبقي، وسعة كل صلاة حتى يبني التطبيق خطة واضحة بلا تفكير إضافي.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            QuranNumericControlRow(title: "الأجزاء المحفوظة", value: $juzCount, range: 0...30)
+
+            QuranNumericControlRow(title: "الزيادة بالأحزاب", value: $additionalHizb, range: 0...maxAdditionalHizb)
+                .disabled(juzCount == 30)
+
+            QuranNumericControlRow(title: "الزيادة بالأرباع", value: $additionalRub, range: 0...maxAdditionalRub)
+                .disabled(juzCount == 30 && additionalHizb == 0)
+
+            Divider()
+
+            Text("الأهداف التكيفية")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+
+            QuranNumericControlRow(title: "حد المراجعة اليومي", value: $dailyGoalRubs, range: 1...12, suffix: "ربع")
+            QuranNumericControlRow(title: "نافذة السبقي", value: $recentWindowRubs, range: 1...maxRecentWindow, suffix: "ربع")
+            QuranNumericControlRow(title: "هدف الحفظ الجديد", value: $newMemorizationTargetRubs, range: 0...maxNewTarget, suffix: "ربع")
+
+            Divider()
+
+            Text("سعة الصلوات")
+                .font(.subheadline)
+                .fontWeight(.semibold)
+
+            QuranNumericControlRow(title: "سعة الفجر", value: $fajrCapacity, range: 0...40, suffix: "آية")
+            QuranNumericControlRow(title: "سعة الظهر", value: $dhuhrCapacity, range: 0...40, suffix: "آية")
+            QuranNumericControlRow(title: "سعة العصر", value: $asrCapacity, range: 0...40, suffix: "آية")
+            QuranNumericControlRow(title: "سعة المغرب", value: $maghribCapacity, range: 0...40, suffix: "آية")
+            QuranNumericControlRow(title: "سعة العشاء", value: $ishaCapacity, range: 0...40, suffix: "آية")
+
+            Text("المحفوظ الحالي: \(quranDescribe(totalRubs: totalDraftRubs))")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Text("الجديد يتوقف تلقائيًا إذا ضعفت المراجعة أو تجاوز الحمل سعتك اليومية.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Button(action: saveAction) {
+                Text("حفظ خطة اليوم")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(AamalTheme.emerald)
+        }
+        .onChange(of: juzCount) { _, newValue in
+            if newValue == 30 {
+                additionalHizb = 0
+                additionalRub = 0
+            }
+            additionalHizb = min(additionalHizb, maxAdditionalHizb)
+            additionalRub = min(additionalRub, maxAdditionalRub)
+            recentWindowRubs = min(recentWindowRubs, maxRecentWindow)
+            newMemorizationTargetRubs = min(newMemorizationTargetRubs, maxNewTarget)
+        }
+        .onChange(of: additionalHizb) { _, _ in
+            additionalRub = min(additionalRub, maxAdditionalRub)
+            recentWindowRubs = min(recentWindowRubs, maxRecentWindow)
+            newMemorizationTargetRubs = min(newMemorizationTargetRubs, maxNewTarget)
+        }
+        .aamalCard()
+    }
+
+    private var maxAdditionalHizb: Int {
+        juzCount == 30 ? 0 : 1
+    }
+
+    private var maxAdditionalRub: Int {
+        if juzCount == 30 && additionalHizb == 0 {
+            return 0
+        }
+        return 3
+    }
+
+    private var maxRecentWindow: Int {
+        max(1, min(totalDraftRubs == 0 ? 16 : totalDraftRubs, 16))
+    }
+
+    private var maxNewTarget: Int {
+        totalDraftRubs >= 240 ? 0 : 2
     }
 }
 
@@ -211,137 +707,6 @@ private struct QuranMetricPill: View {
         .padding(.vertical, 10)
         .background(AamalTheme.gold.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 12))
-    }
-}
-
-private struct QuranPlanSummaryCard: View {
-    @ObservedObject var store: TaskStore
-    let openSettingsAction: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("إعدادات المحفوظ")
-                        .font(.headline)
-                    Text(summaryText)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                Button(action: openSettingsAction) {
-                    Label("تعديل", systemImage: "slider.horizontal.3")
-                }
-                .buttonStyle(.bordered)
-                .tint(AamalTheme.gold)
-            }
-
-            HStack {
-                QuranMetricPill(title: "المحفوظ", value: memorizedSummary)
-                QuranMetricPill(title: "الورد", value: "\(store.quranRevisionPlan.dailyGoalRubs) ربع")
-                QuranMetricPill(title: "الأيام المنجزة", value: "\(store.quranRevisionPlan.completedDates.count)")
-            }
-        }
-        .aamalCardSolid()
-    }
-
-    private var summaryText: String {
-        if store.quranRevisionPlan.totalMemorizedRubs == 0 {
-            return "حدد المحفوظ والورد اليومي من الإعدادات ليظهر توزيع المراجعة."
-        }
-        return "تم نقل إعداد المحفوظ والورد إلى الإعدادات لتبقى صفحة المراجعة مركزة على ورد اليوم."
-    }
-
-    private var memorizedSummary: String {
-        guard store.quranRevisionPlan.totalMemorizedRubs > 0 else { return "غير محدد" }
-        let juz = store.quranRevisionPlan.totalMemorizedRubs / 8
-        let remainder = store.quranRevisionPlan.totalMemorizedRubs % 8
-        let hizb = remainder / 4
-        let rub = remainder % 4
-
-        var parts: [String] = []
-        if juz > 0 { parts.append("\(juz) جزء") }
-        if hizb > 0 { parts.append("\(hizb) حزب") }
-        if rub > 0 { parts.append("\(rub) ربع") }
-        return parts.joined(separator: " + ")
-    }
-}
-
-private struct QuranPlanEditorCard: View {
-    @Binding var juzCount: Int
-    @Binding var additionalHizb: Int
-    @Binding var additionalRub: Int
-    @Binding var dailyGoalRubs: Int
-    let totalDraftRubs: Int
-    let saveAction: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("إعداد خطة المراجعة")
-                .font(.headline)
-
-            Text("اضبط المحفوظ والورد من هنا، ثم ستبقى صفحة المراجعة مركزة على المهمة اليومية.")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            QuranNumericControlRow(title: "الأجزاء المحفوظة", value: $juzCount, range: 0...30)
-
-            QuranNumericControlRow(title: "الزيادة بالأحزاب", value: $additionalHizb, range: 0...maxAdditionalHizb)
-            .disabled(juzCount == 30)
-
-            QuranNumericControlRow(title: "الزيادة بالأرباع", value: $additionalRub, range: 0...maxAdditionalRub)
-            .disabled(juzCount == 30 && additionalHizb == 0)
-
-            QuranNumericControlRow(title: "الورد اليومي", value: $dailyGoalRubs, range: 1...4, suffix: "ربع")
-
-            Text("المحفوظ الحالي: \(describe(totalRubs: totalDraftRubs))")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            Button(action: saveAction) {
-                Text("حفظ خطة المراجعة")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(AamalTheme.emerald)
-        }
-        .onChange(of: juzCount) { _, newValue in
-            if newValue == 30 {
-                additionalHizb = 0
-                additionalRub = 0
-            }
-            additionalHizb = min(additionalHizb, maxAdditionalHizb)
-            additionalRub = min(additionalRub, maxAdditionalRub)
-        }
-        .onChange(of: additionalHizb) { _, _ in
-            additionalRub = min(additionalRub, maxAdditionalRub)
-        }
-        .aamalCard()
-    }
-
-    private var maxAdditionalHizb: Int {
-        juzCount == 30 ? 0 : 1
-    }
-
-    private var maxAdditionalRub: Int {
-        if juzCount == 30 && additionalHizb == 0 {
-            return 0
-        }
-        return 3
-    }
-
-    private func describe(totalRubs: Int) -> String {
-        guard totalRubs > 0 else { return "غير محدد بعد" }
-        let juz = totalRubs / 8
-        let remainder = totalRubs % 8
-        let hizb = remainder / 4
-        let rub = remainder % 4
-
-        var parts: [String] = []
-        if juz > 0 { parts.append("\(juz) جزء") }
-        if hizb > 0 { parts.append("\(hizb) حزب") }
-        if rub > 0 { parts.append("\(rub) ربع") }
-        return parts.joined(separator: " + ")
     }
 }
 
@@ -382,100 +747,57 @@ private struct QuranNumericControlRow: View {
     }
 }
 
-private struct QuranTodayMissionCard: View {
-    @ObservedObject var store: TaskStore
-    let completionAction: () -> Void
+private func quranDescribe(totalRubs: Int) -> String {
+    guard totalRubs > 0 else { return "غير محدد" }
+    let juz = totalRubs / 8
+    let remainder = totalRubs % 8
+    let hizb = remainder / 4
+    let rub = remainder % 4
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("ورد اليوم")
-                .font(.headline)
+    var parts: [String] = []
+    if juz > 0 { parts.append("\(juz) جزء") }
+    if hizb > 0 { parts.append("\(hizb) حزب") }
+    if rub > 0 { parts.append("\(rub) ربع") }
+    return parts.joined(separator: " + ")
+}
 
-            if store.todaysQuranRevision.isEmpty {
-                Text("بعد تحديد مقدار المحفوظ سيظهر لك الربع أو الربعان المطلوبان يوميًا.")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            } else {
-                Text("راجع اليوم هذه المواضع بالترتيب:")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
+private func quranPageSummary(for rubs: [QuranRubReference]) -> String {
+    guard let firstMetadata = rubs.first?.metadata,
+          let lastMetadata = rubs.last?.metadata else {
+        return ""
+    }
 
-                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-                    ForEach(store.todaysQuranRevision) { rub in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(rub.shortTitle)
-                                .font(.headline)
-                            Text(rub.detailedTitle)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Text(rub.surahSpanText)
-                                .font(.caption)
-                                .foregroundColor(AamalTheme.ink)
-                            Text(rub.pageSpanText)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(12)
-                        .background(AamalTheme.emerald.opacity(0.08))
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                    }
-                }
+    if firstMetadata.startPage == lastMetadata.endPage {
+        return "صفحة \(firstMetadata.startPage)"
+    }
 
-                Button(action: completionAction) {
-                    Text(store.isQuranRevisionCompleted() ? "ورد اليوم مكتمل" : "تسجيل إنجاز ورد اليوم")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(AamalTheme.gold)
-                .disabled(store.isQuranRevisionCompleted() || store.todaysQuranRevision.isEmpty)
+    return "من صفحة \(firstMetadata.startPage) إلى صفحة \(lastMetadata.endPage)"
+}
 
-                Text("إكمال الورد اليومي يمنحك \(store.quranRevisionPlan.dailyGoalRubs * 6) نقطة.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
-        .aamalCard()
+private func quranTint(for kind: QuranPlanSegmentKind) -> Color {
+    switch kind {
+    case .newMemorization:
+        return AamalTheme.emerald
+    case .recovery:
+        return AamalTheme.gold
+    case .recentRevision:
+        return AamalTheme.ink
+    case .pastRevision:
+        return AamalTheme.sand
+    case .reinforcement:
+        return AamalTheme.mint
     }
 }
 
-private struct QuranUpcomingScheduleCard: View {
-    let assignments: [QuranDailyAssignment]
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("خطة الأيام القادمة")
-                .font(.headline)
-
-            if assignments.allSatisfy({ $0.rubs.isEmpty }) {
-                Text("لن تظهر الخطة إلا بعد تحديد مقدار المحفوظ.")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            } else {
-                ForEach(assignments) { assignment in
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(dateTitle(for: assignment.date))
-                            .font(.subheadline)
-                            .fontWeight(.semibold)
-
-                        Text(assignment.rubs.map { "\($0.detailedTitle) - \($0.surahSpanText) (\($0.pageSpanText))" }.joined(separator: "، "))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(AamalTheme.gold.opacity(0.07))
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                }
-            }
-        }
-        .aamalCardSolid()
-    }
-
-    private func dateTitle(for date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ar")
-        formatter.dateFormat = "EEEE d MMM"
-        return formatter.string(from: date)
+private func quranModeTint(for mode: QuranAdaptiveMode) -> Color {
+    switch mode {
+    case .normal:
+        return AamalTheme.emerald
+    case .reducedSafety:
+        return AamalTheme.gold
+    case .recoveryReentry:
+        return AamalTheme.ink
+    case .recoveryRestabilization:
+        return AamalTheme.mint
     }
 }
