@@ -96,7 +96,102 @@ struct AamalTests {
         #expect(reloadedStore.scoreLog.map(\.reason) == [.compensatedPrayer, .quranRevisionCompleted])
     }
 
+    @Test func qiyamRankAndGraceAwareStreakAreCalculated() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let (store, _) = makeStore(defaults: defaults)
+        let dayOne = qiyamDate(offsetDays: 0)
+        let dayThree = qiyamDate(offsetDays: 2)
+        let dayFive = qiyamDate(offsetDays: 4)
+
+        store.configureQuranRevisionPlan(
+            juzCount: 1,
+            additionalHizb: 0,
+            additionalRub: 0,
+            dailyGoalRubs: 2,
+            recentWindowRubs: 4,
+            newMemorizationTargetRubs: 0,
+            qiyamEnabled: true,
+            prayerCapacities: [.fajr: 12, .dhuhr: 12, .asr: 12, .maghrib: 12, .isha: 12]
+        )
+
+        #expect(store.logQiyamSession(ayatCount: 120, on: dayOne))
+        var plan = store.adaptiveQuranPlan(for: dayOne)
+        #expect(plan.qiyamInsight.rank == .qanit)
+        #expect(plan.qiyamInsight.streak == 1)
+
+        #expect(store.logQiyamSession(ayatCount: 20, on: dayThree))
+        plan = store.adaptiveQuranPlan(for: dayThree)
+        #expect(plan.qiyamInsight.rank == .preservedConnection)
+        #expect(plan.qiyamInsight.streak == 2)
+
+        let brokenPlan = store.adaptiveQuranPlan(for: dayFive)
+        #expect(brokenPlan.qiyamInsight.streak == 0)
+    }
+
+    @Test func qiyamReducesRequiredRevisionLoad() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let (store, _) = makeStore(defaults: defaults)
+        let referenceDate = Self.referenceDate
+
+        store.configureQuranRevisionPlan(
+            juzCount: 2,
+            additionalHizb: 0,
+            additionalRub: 0,
+            dailyGoalRubs: 4,
+            recentWindowRubs: 8,
+            newMemorizationTargetRubs: 0,
+            qiyamEnabled: true,
+            prayerCapacities: [.fajr: 20, .dhuhr: 20, .asr: 20, .maghrib: 20, .isha: 20]
+        )
+
+        let baselinePlan = store.adaptiveQuranPlan(for: referenceDate)
+        let baselineAyahs = baselinePlan.requiredRevision.reduce(0) { $0 + $1.estimatedAyahs }
+        #expect(baselineAyahs > 0)
+
+        #expect(store.logQiyamSession(ayatCount: 150, on: referenceDate))
+
+        let adjustedPlan = store.adaptiveQuranPlan(for: referenceDate)
+        let adjustedAyahs = adjustedPlan.requiredRevision.reduce(0) { $0 + $1.estimatedAyahs }
+        #expect(adjustedPlan.qiyamInsight.rank == .qanit)
+        #expect(adjustedPlan.qiyamInsight.reducedAyahs > 0)
+        #expect(adjustedAyahs < baselineAyahs)
+    }
+
+    @Test func qiyamProtectsReducedSafetyDay() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let (store, _) = makeStore(defaults: defaults)
+        let referenceDate = Self.referenceDate
+
+        store.configureQuranRevisionPlan(
+            juzCount: 2,
+            additionalHizb: 0,
+            additionalRub: 0,
+            dailyGoalRubs: 4,
+            recentWindowRubs: 8,
+            newMemorizationTargetRubs: 0,
+            qiyamEnabled: true,
+            prayerCapacities: [.fajr: 10, .dhuhr: 0, .asr: 0, .maghrib: 0, .isha: 0]
+        )
+
+        #expect(store.logQiyamSession(ayatCount: 60, on: referenceDate))
+
+        let plan = store.adaptiveQuranPlan(for: referenceDate)
+        #expect(plan.mode == .reducedSafety)
+        #expect(plan.qiyamInsight.connectionProtectedToday)
+        #expect(plan.qiyamInsight.message.contains("حفظ اتصالك بالقرآن اليوم"))
+    }
+
     private static let referenceDate = Date(timeIntervalSince1970: 1_720_000_000)
+
+    private func qiyamDate(offsetDays: Int) -> Date {
+        Calendar.current.date(byAdding: .day, value: offsetDays, to: Calendar.current.startOfDay(for: Self.referenceDate)) ?? Self.referenceDate
+    }
 
     private func makeDefaults() throws -> (UserDefaults, String) {
         let suiteName = "AamalTests.\(UUID().uuidString)"

@@ -78,11 +78,87 @@ struct CompensationProgress: Codable {
     }
 }
 
+struct QiyamSession: Identifiable, Codable, Hashable {
+    static let estimatedAyahsPerPage = 20
+
+    let date: Date
+    let ayatCount: Int
+
+    var id: Date { date }
+
+    var estimatedPageCount: Int {
+        guard ayatCount > 0 else { return 0 }
+        return Int(ceil(Double(ayatCount) / Double(Self.estimatedAyahsPerPage)))
+    }
+}
+
+enum QuranQiyamRank: String, Codable, Hashable {
+    case preservedConnection
+    case qanit
+    case muqantir
+
+    static func rank(for ayatCount: Int) -> QuranQiyamRank? {
+        switch ayatCount {
+        case 1000...:
+            return .muqantir
+        case 100...:
+            return .qanit
+        case 10...:
+            return .preservedConnection
+        default:
+            return nil
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .preservedConnection:
+            return "غير من الغافلين"
+        case .qanit:
+            return "من القانتين"
+        case .muqantir:
+            return "من المقنطرين"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .preservedConnection:
+            return "moon.zzz.fill"
+        case .qanit:
+            return "sparkles.rectangle.stack.fill"
+        case .muqantir:
+            return "star.square.on.square.fill"
+        }
+    }
+}
+
+struct QuranQiyamDailyInsight: Hashable {
+    let enabled: Bool
+    let session: QiyamSession?
+    let streak: Int
+    let rank: QuranQiyamRank?
+    let reductionFraction: Double
+    let reducedAyahs: Int
+    let connectionProtectedToday: Bool
+    let message: String
+
+    var ayatCount: Int {
+        session?.ayatCount ?? 0
+    }
+
+    var reductionPercentage: Int {
+        Int((reductionFraction * 100).rounded())
+    }
+}
+
 struct QuranRevisionPlan: Codable {
     var totalMemorizedRubs: Int
     var dailyGoalRubs: Int
     var recentWindowRubs: Int
     var newMemorizationTargetRubs: Int
+    var qiyamEnabled: Bool
+    var qiyamSessions: [QiyamSession]
     var weakRubIndices: [Int]
     var prayerCapacities: [String: Int]
     var startDate: Date
@@ -95,6 +171,8 @@ struct QuranRevisionPlan: Codable {
         case dailyGoalRubs
         case recentWindowRubs
         case newMemorizationTargetRubs
+        case qiyamEnabled
+        case qiyamSessions
         case weakRubIndices
         case prayerCapacities
         case startDate
@@ -116,6 +194,8 @@ struct QuranRevisionPlan: Codable {
         dailyGoalRubs: Int = 4,
         recentWindowRubs: Int? = nil,
         newMemorizationTargetRubs: Int = 1,
+        qiyamEnabled: Bool = true,
+        qiyamSessions: [QiyamSession] = [],
         weakRubIndices: [Int] = [],
         prayerCapacities: [String: Int] = QuranRevisionPlan.defaultPrayerCapacities,
         startDate: Date = Date(),
@@ -127,6 +207,8 @@ struct QuranRevisionPlan: Codable {
         self.dailyGoalRubs = dailyGoalRubs
         self.recentWindowRubs = recentWindowRubs ?? Self.defaultRecentWindow(for: totalMemorizedRubs)
         self.newMemorizationTargetRubs = newMemorizationTargetRubs
+        self.qiyamEnabled = qiyamEnabled
+        self.qiyamSessions = qiyamSessions
         self.weakRubIndices = weakRubIndices
         self.prayerCapacities = prayerCapacities
         self.startDate = startDate
@@ -143,6 +225,8 @@ struct QuranRevisionPlan: Codable {
         recentWindowRubs = try container.decodeIfPresent(Int.self, forKey: .recentWindowRubs)
             ?? Self.defaultRecentWindow(for: totalMemorizedRubs)
         newMemorizationTargetRubs = try container.decodeIfPresent(Int.self, forKey: .newMemorizationTargetRubs) ?? 1
+        qiyamEnabled = try container.decodeIfPresent(Bool.self, forKey: .qiyamEnabled) ?? true
+        qiyamSessions = try container.decodeIfPresent([QiyamSession].self, forKey: .qiyamSessions) ?? []
         weakRubIndices = try container.decodeIfPresent([Int].self, forKey: .weakRubIndices) ?? []
         prayerCapacities = try container.decodeIfPresent([String: Int].self, forKey: .prayerCapacities)
             ?? Self.defaultPrayerCapacities
@@ -159,6 +243,8 @@ struct QuranRevisionPlan: Codable {
         try container.encode(dailyGoalRubs, forKey: .dailyGoalRubs)
         try container.encode(recentWindowRubs, forKey: .recentWindowRubs)
         try container.encode(newMemorizationTargetRubs, forKey: .newMemorizationTargetRubs)
+        try container.encode(qiyamEnabled, forKey: .qiyamEnabled)
+        try container.encode(qiyamSessions, forKey: .qiyamSessions)
         try container.encode(weakRubIndices, forKey: .weakRubIndices)
         try container.encode(prayerCapacities, forKey: .prayerCapacities)
         try container.encode(startDate, forKey: .startDate)
@@ -172,6 +258,7 @@ struct QuranRevisionPlan: Codable {
         dailyGoalRubs = min(max(1, dailyGoalRubs), max(1, min(totalMemorizedRubs == 0 ? 12 : totalMemorizedRubs, 12)))
         recentWindowRubs = min(max(1, recentWindowRubs), max(1, min(totalMemorizedRubs == 0 ? 16 : totalMemorizedRubs, 16)))
         newMemorizationTargetRubs = min(max(0, newMemorizationTargetRubs), totalMemorizedRubs >= 240 ? 0 : 2)
+        qiyamSessions = Self.normalizedQiyamSessions(from: qiyamSessions)
         weakRubIndices = Self.normalizedWeakRubIndices(from: weakRubIndices, totalMemorizedRubs: totalMemorizedRubs)
         prayerCapacities = Self.normalizedPrayerCapacities(from: prayerCapacities)
         completedDates = Array(Set(completedDates.map { Calendar.current.startOfDay(for: $0) })).sorted()
@@ -192,6 +279,11 @@ struct QuranRevisionPlan: Codable {
         }
     }
 
+    func qiyamSession(on date: Date) -> QiyamSession? {
+        let dayKey = Calendar.current.startOfDay(for: date)
+        return qiyamSessions.first { $0.date == dayKey }
+    }
+
     private static func defaultRecentWindow(for totalMemorizedRubs: Int) -> Int {
         guard totalMemorizedRubs > 0 else { return 4 }
         return min(max(4, totalMemorizedRubs / 5), min(16, totalMemorizedRubs))
@@ -203,6 +295,21 @@ struct QuranRevisionPlan: Codable {
             normalized[prayer.rawValue] = min(max(0, values[prayer.rawValue] ?? defaultPrayerCapacities[prayer.rawValue] ?? 0), 40)
         }
         return normalized
+    }
+
+    private static func normalizedQiyamSessions(from values: [QiyamSession]) -> [QiyamSession] {
+        var normalizedByDate: [Date: Int] = [:]
+
+        for session in values {
+            let dayKey = Calendar.current.startOfDay(for: session.date)
+            let ayatCount = min(max(0, session.ayatCount), 2000)
+            guard ayatCount > 0 else { continue }
+            normalizedByDate[dayKey] = ayatCount
+        }
+
+        return normalizedByDate.keys.sorted().map { date in
+            QiyamSession(date: date, ayatCount: normalizedByDate[date] ?? 0)
+        }
     }
 
     private static func normalizedWeakRubIndices(from values: [Int], totalMemorizedRubs: Int) -> [Int] {
@@ -419,6 +526,7 @@ struct QuranAdaptiveDailyPlan: Hashable {
     let newMemorization: QuranPlanSummaryItem?
     let requiredRevision: [QuranPlanSummaryItem]
     let prayerAssignments: [QuranPrayerAssignment]
+    let qiyamInsight: QuranQiyamDailyInsight
     let guidance: String
     let safeguards: [String]
     let newMemorizationAllowed: Bool

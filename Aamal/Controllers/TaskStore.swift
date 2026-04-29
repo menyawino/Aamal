@@ -460,6 +460,10 @@ final class TaskStore: ObservableObject {
         quranRevisionPlan.weakRubIndices.map(QuranRubReference.init(globalRubIndex:))
     }
 
+    var todaysQiyamSession: QiyamSession? {
+        quranRevisionPlan.qiyamSession(on: Date())
+    }
+
     var todaysAdaptiveQuranPlan: QuranAdaptiveDailyPlan {
         adaptiveQuranPlan(for: Date())
     }
@@ -565,6 +569,7 @@ final class TaskStore: ObservableObject {
             dailyGoalRubs: dailyGoalRubs,
             recentWindowRubs: quranRevisionPlan.recentWindowRubs,
             newMemorizationTargetRubs: quranRevisionPlan.newMemorizationTargetRubs,
+            qiyamEnabled: quranRevisionPlan.qiyamEnabled,
             prayerCapacities: currentCapacities
         )
     }
@@ -576,6 +581,7 @@ final class TaskStore: ObservableObject {
         dailyGoalRubs: Int,
         recentWindowRubs: Int,
         newMemorizationTargetRubs: Int,
+        qiyamEnabled: Bool? = nil,
         prayerCapacities: [PrayerCompensationType: Int]
     ) {
         let safeJuz = min(max(0, juzCount), 30)
@@ -596,6 +602,8 @@ final class TaskStore: ObservableObject {
             dailyGoalRubs: goal,
             recentWindowRubs: safeRecentWindow,
             newMemorizationTargetRubs: safeNewTarget,
+            qiyamEnabled: qiyamEnabled ?? quranRevisionPlan.qiyamEnabled,
+            qiyamSessions: quranRevisionPlan.qiyamSessions,
             weakRubIndices: quranRevisionPlan.weakRubIndices.filter { $0 <= totalRubs },
             prayerCapacities: normalizedCapacities,
             startDate: preservesProgress ? quranRevisionPlan.startDate : Date(),
@@ -604,6 +612,41 @@ final class TaskStore: ObservableObject {
             streak: preservesProgress ? quranRevisionPlan.streak : 0
         )
         recordProgressSnapshot(for: Date())
+    }
+
+    func qiyamSession(on date: Date = Date()) -> QiyamSession? {
+        quranRevisionPlan.qiyamSession(on: date)
+    }
+
+    @discardableResult
+    func logQiyamSession(ayatCount: Int, on date: Date = Date()) -> Bool {
+        guard quranRevisionPlan.qiyamEnabled else { return false }
+
+        let dayKey = dateKey(date)
+        let normalizedAyahs = min(max(0, ayatCount), 2000)
+        quranRevisionPlan.qiyamSessions.removeAll { $0.date == dayKey }
+
+        guard normalizedAyahs > 0 else {
+            saveData()
+            return false
+        }
+
+        quranRevisionPlan.qiyamSessions.append(QiyamSession(date: dayKey, ayatCount: normalizedAyahs))
+        quranRevisionPlan.normalize()
+        saveData()
+        return true
+    }
+
+    @discardableResult
+    func clearQiyamSession(on date: Date = Date()) -> Bool {
+        let dayKey = dateKey(date)
+        let previousCount = quranRevisionPlan.qiyamSessions.count
+        quranRevisionPlan.qiyamSessions.removeAll { $0.date == dayKey }
+        let didRemove = quranRevisionPlan.qiyamSessions.count != previousCount
+        if didRemove {
+            saveData()
+        }
+        return didRemove
     }
 
     func isQuranRevisionCompleted(on date: Date = Date()) -> Bool {
@@ -692,9 +735,21 @@ final class TaskStore: ObservableObject {
         let active: Bool
     }
 
+    private struct QuranQiyamStreakState {
+        let streak: Int
+        let latestQualifyingDate: Date?
+        let graceMonthsUsed: Set<String>
+    }
+
+    private struct QuranQiyamAdjustmentResult {
+        let slices: [QuranPlanPageSlice]
+        let insight: QuranQiyamDailyInsight
+    }
+
     func adaptiveQuranPlan(for date: Date) -> QuranAdaptiveDailyPlan {
         let dayKey = dateKey(date)
         let emptyAssignments = emptyQuranPrayerAssignments()
+        let emptyQiyamInsight = applyQiyamAdjustment(to: [], on: dayKey, mode: .normal).insight
 
         guard quranRevisionPlan.totalMemorizedRubs > 0 else {
             return QuranAdaptiveDailyPlan(
@@ -703,6 +758,7 @@ final class TaskStore: ObservableObject {
                 newMemorization: nil,
                 requiredRevision: [],
                 prayerAssignments: emptyAssignments,
+                qiyamInsight: emptyQiyamInsight,
                 guidance: "حدد مقدار المحفوظ أولًا ثم اضبط سعة كل صلاة لتظهر خطة اليوم.",
                 safeguards: [],
                 newMemorizationAllowed: false
@@ -716,6 +772,7 @@ final class TaskStore: ObservableObject {
                 newMemorization: nil,
                 requiredRevision: [],
                 prayerAssignments: emptyAssignments,
+                qiyamInsight: emptyQiyamInsight,
                 guidance: "أدخل سعة كل صلاة أولًا ليتم توزيع المراجعة على اليوم.",
                 safeguards: [],
                 newMemorizationAllowed: false
@@ -817,13 +874,16 @@ final class TaskStore: ObservableObject {
 
     private func standardQuranPlan(for date: Date, quranCompliance: Double, context: QuranSafetyContext) -> QuranAdaptiveDailyPlan {
         let recoveryIDs = Set(context.recoveryRubs.map(\ .globalRubIndex))
-        let requiredItems = [
-            makePlanSummary(kind: .recovery, rubs: context.recoveryRubs),
-            makePlanSummary(kind: .recentRevision, rubs: context.recentRubs),
-            makePlanSummary(kind: .pastRevision, rubs: context.pastRubs)
-        ].compactMap { $0 }
+        let requiredSlices = pageSlices(for: context.recoveryRubs, kind: .recovery)
+            + pageSlices(for: context.recentRubs, kind: .recentRevision)
+            + pageSlices(for: context.pastRubs, kind: .pastRevision)
+        let qiyamAdjustment = applyQiyamAdjustment(to: requiredSlices, on: date, mode: .normal)
+        let requiredItems = planSummaryItems(
+            from: qiyamAdjustment.slices,
+            useAyahQuantityText: qiyamAdjustment.insight.reducedAyahs > 0
+        )
 
-        let requiredAyahs = requiredItems.reduce(0) { $0 + $1.estimatedAyahs }
+        let requiredAyahs = qiyamAdjustment.slices.reduce(0) { $0 + $1.estimatedAyahs }
         let requestedNewRubs = min(quranRevisionPlan.newMemorizationTargetRubs, max(0, 240 - quranRevisionPlan.totalMemorizedRubs))
         let candidateNewRubs = nextNewMemorizationRubs(after: quranRevisionPlan.totalMemorizedRubs, count: requestedNewRubs)
         let newAllowed = requestedNewRubs > 0
@@ -836,9 +896,7 @@ final class TaskStore: ObservableObject {
             ? takeLatestUniqueRubs(from: context.recentPool, count: 1, excluding: reinforcementExclusions)
             : []
 
-        let slices = pageSlices(for: context.recoveryRubs, kind: .recovery)
-            + pageSlices(for: context.recentRubs, kind: .recentRevision)
-            + pageSlices(for: context.pastRubs, kind: .pastRevision)
+        let slices = qiyamAdjustment.slices
             + pageSlices(for: reinforcementRubs, kind: .reinforcement)
 
         return QuranAdaptiveDailyPlan(
@@ -847,6 +905,7 @@ final class TaskStore: ObservableObject {
             newMemorization: newAllowed ? makePlanSummary(kind: .newMemorization, rubs: candidateNewRubs) : nil,
             requiredRevision: requiredItems,
             prayerAssignments: distributeQuranSlices(slices),
+            qiyamInsight: qiyamAdjustment.insight,
             guidance: newAllowed
                 ? "ابدأ بالأصعب في الفجر، ثم نفذ بقية التوزيع كما هو موضح."
                 : "اليوم موجه للمراجعة فقط حتى تبقى السلامة مرتفعة قبل فتح الجديد من جديد.",
@@ -905,21 +964,18 @@ final class TaskStore: ObservableObject {
             let pastSource = oldestPastPool.isEmpty ? context.pastRubs : oldestPastPool
             let pastSlices = quotaPageSlices(from: pastSource, kind: .pastRevision, totalAyahs: remainingPastQuota)
             slices.append(contentsOf: pastSlices)
-            if let item = makePlanSummary(
-                kind: .pastRevision,
-                slices: pastSlices,
-                quantityOverrideText: "\(remainingPastQuota) آية"
-            ) {
-                requiredItems.append(item)
-            }
         }
+
+        let qiyamAdjustment = applyQiyamAdjustment(to: slices, on: date, mode: .reducedSafety)
+        requiredItems = planSummaryItems(from: qiyamAdjustment.slices, useAyahQuantityText: true)
 
         return QuranAdaptiveDailyPlan(
             date: date,
             mode: .reducedSafety,
             newMemorization: nil,
             requiredRevision: requiredItems,
-            prayerAssignments: distributeQuranSlices(slices),
+            prayerAssignments: distributeQuranSlices(qiyamAdjustment.slices),
+            qiyamInsight: qiyamAdjustment.insight,
             guidance: "اليوم محدود بالسعة لا بالتقصير، لذلك تحولت الخطة إلى حد أدنى يحمي المحفوظ بدل أن يرهقك بحمل غير واقعي.",
             safeguards: [
                 "لا توجد رسالة لوم أو عقوبة عند انخفاض السعة.",
@@ -960,35 +1016,21 @@ final class TaskStore: ObservableObject {
         let recentSlices = quotaPageSlices(from: recentSource, kind: .recentRevision, totalAyahs: recentQuota, prioritizeLatestPages: true)
         let pastSlices = quotaPageSlices(from: pastSource.isEmpty ? recentSource : pastSource, kind: .pastRevision, totalAyahs: pastQuota)
 
-        var requiredItems: [QuranPlanSummaryItem] = []
-        if let forgottenItem = makePlanSummary(
-            kind: .recovery,
-            slices: forgottenSlices,
-            quantityOverrideText: "\(forgottenQuota) آية"
-        ) {
-            requiredItems.append(forgottenItem)
-        }
-        if let recentItem = makePlanSummary(
-            kind: .recentRevision,
-            slices: recentSlices,
-            quantityOverrideText: recentQuota > 0 ? "\(recentQuota) آية" : nil
-        ) {
-            requiredItems.append(recentItem)
-        }
-        if let pastItem = makePlanSummary(
-            kind: .pastRevision,
-            slices: pastSlices,
-            quantityOverrideText: recoveryPastQuantityText(for: pastQuota)
-        ) {
-            requiredItems.append(pastItem)
-        }
+        let mode: QuranAdaptiveMode = isReentry ? .recoveryReentry : .recoveryRestabilization
+        let qiyamAdjustment = applyQiyamAdjustment(to: forgottenSlices + recentSlices + pastSlices, on: date, mode: mode)
+        let requiredItems = planSummaryItems(
+            from: qiyamAdjustment.slices,
+            quantityOverrides: [.pastRevision: recoveryPastQuantityText(for: qiyamAdjustment.slices.filter { $0.kind == .pastRevision }.reduce(0) { $0 + $1.estimatedAyahs })],
+            useAyahQuantityText: true
+        )
 
         return QuranAdaptiveDailyPlan(
             date: date,
-            mode: isReentry ? .recoveryReentry : .recoveryRestabilization,
+            mode: mode,
             newMemorization: nil,
             requiredRevision: requiredItems,
-            prayerAssignments: distributeQuranSlices(forgottenSlices + recentSlices + pastSlices),
+            prayerAssignments: distributeQuranSlices(qiyamAdjustment.slices),
+            qiyamInsight: qiyamAdjustment.insight,
             guidance: isReentry
                 ? "بعد الانقطاع لا نعود إلى الحجم السابق مباشرة؛ نبدأ بخطة قصيرة تعيد الثقة وتثبت آخر المواضع المتأثرة."
                 : "العودة الآن تدريجية: جرعة يومية ثابتة للضعيف مع رفع المراجعة القديمة خطوة بعد خطوة حتى تستقر الخطة من جديد.",
@@ -1047,6 +1089,210 @@ final class TaskStore: ObservableObject {
             currentDayIndex: active ? runLength + 1 : 0,
             active: active
         )
+    }
+
+    private func applyQiyamAdjustment(
+        to slices: [QuranPlanPageSlice],
+        on date: Date,
+        mode: QuranAdaptiveMode
+    ) -> QuranQiyamAdjustmentResult {
+        let dayKey = dateKey(date)
+        let streakState = qiyamStreakState(until: dayKey)
+
+        guard quranRevisionPlan.qiyamEnabled else {
+            return QuranQiyamAdjustmentResult(
+                slices: slices,
+                insight: QuranQiyamDailyInsight(
+                    enabled: false,
+                    session: nil,
+                    streak: 0,
+                    rank: nil,
+                    reductionFraction: 0,
+                    reducedAyahs: 0,
+                    connectionProtectedToday: false,
+                    message: "دمج قيام الليل متوقف من الإعدادات، ويمكنك تفعيله متى شئت."
+                )
+            )
+        }
+
+        let session = quranRevisionPlan.qiyamSession(on: dayKey)
+        let ayatCount = session?.ayatCount ?? 0
+        let rank = QuranQiyamRank.rank(for: ayatCount)
+        let reductionBlocks = ayatCount / 50
+        let reductionFraction = min(0.4, Double(reductionBlocks) * 0.125)
+        let baseRequiredAyahs = slices.reduce(0) { $0 + $1.estimatedAyahs }
+        let targetReductionAyahs = Int((Double(baseRequiredAyahs) * reductionFraction).rounded())
+        let adjustedSlices = applyQiyamReduction(targetReductionAyahs, to: slices)
+        let adjustedAyahs = adjustedSlices.reduce(0) { $0 + $1.estimatedAyahs }
+        let reducedAyahs = max(0, baseRequiredAyahs - adjustedAyahs)
+
+        return QuranQiyamAdjustmentResult(
+            slices: adjustedSlices,
+            insight: QuranQiyamDailyInsight(
+                enabled: true,
+                session: session,
+                streak: streakState.streak,
+                rank: rank,
+                reductionFraction: reductionFraction,
+                reducedAyahs: reducedAyahs,
+                connectionProtectedToday: ayatCount >= 50,
+                message: qiyamMessage(
+                    ayatCount: ayatCount,
+                    rank: rank,
+                    reducedAyahs: reducedAyahs,
+                    streak: streakState.streak,
+                    mode: mode
+                )
+            )
+        )
+    }
+
+    private func applyQiyamReduction(_ reductionAyahs: Int, to slices: [QuranPlanPageSlice]) -> [QuranPlanPageSlice] {
+        guard reductionAyahs > 0, !slices.isEmpty else { return slices }
+
+        var adjusted = slices
+        var remainingReduction = reductionAyahs
+
+        for kind in [QuranPlanSegmentKind.recovery, .recentRevision, .pastRevision] where remainingReduction > 0 {
+            var indices = adjusted.indices.filter { adjusted[$0].kind == kind }
+            while let index = indices.popLast(), remainingReduction > 0 {
+                let slice = adjusted[index]
+                if slice.estimatedAyahs <= remainingReduction {
+                    remainingReduction -= slice.estimatedAyahs
+                    adjusted.remove(at: index)
+                } else {
+                    adjusted[index] = QuranPlanPageSlice(
+                        kind: slice.kind,
+                        rub: slice.rub,
+                        startPage: slice.startPage,
+                        endPage: slice.endPage,
+                        estimatedAyahs: slice.estimatedAyahs - remainingReduction
+                    )
+                    remainingReduction = 0
+                }
+                indices = adjusted.indices.filter { adjusted[$0].kind == kind }
+            }
+        }
+
+        return adjusted
+    }
+
+    private func planSummaryItems(
+        from slices: [QuranPlanPageSlice],
+        quantityOverrides: [QuranPlanSegmentKind: String] = [:],
+        useAyahQuantityText: Bool = false
+    ) -> [QuranPlanSummaryItem] {
+        [QuranPlanSegmentKind.recovery, .recentRevision, .pastRevision].compactMap { kind in
+            let kindSlices = slices.filter { $0.kind == kind }
+            guard !kindSlices.isEmpty else { return nil }
+
+            let estimatedAyahs = kindSlices.reduce(0) { $0 + $1.estimatedAyahs }
+            let quantityOverrideText = quantityOverrides[kind]
+                ?? (useAyahQuantityText ? "\(estimatedAyahs) آية" : nil)
+            return makePlanSummary(
+                kind: kind,
+                slices: kindSlices,
+                quantityOverrideText: quantityOverrideText
+            )
+        }
+    }
+
+    private func qiyamStreakState(until date: Date) -> QuranQiyamStreakState {
+        let dayKey = dateKey(date)
+        let qualifyingDates = quranRevisionPlan.qiyamSessions
+            .filter { $0.ayatCount >= 10 && $0.date <= dayKey }
+            .map(\ .date)
+            .sorted()
+
+        guard let latestQualifyingDate = qualifyingDates.last else {
+            return QuranQiyamStreakState(streak: 0, latestQualifyingDate: nil, graceMonthsUsed: [])
+        }
+
+        let calendar = Calendar.current
+        var graceMonthsUsed: Set<String> = []
+        var streak = 1
+        var current = latestQualifyingDate
+
+        for previous in qualifyingDates.dropLast().reversed() {
+            let gap = calendar.dateComponents([.day], from: previous, to: current).day ?? 0
+            if gap == 1 {
+                streak += 1
+                current = previous
+                continue
+            }
+
+            if gap == 2,
+               let missedDay = calendar.date(byAdding: .day, value: 1, to: previous) {
+                let monthKey = qiyamGraceMonthKey(for: missedDay)
+                if !graceMonthsUsed.contains(monthKey) {
+                    graceMonthsUsed.insert(monthKey)
+                    streak += 1
+                    current = previous
+                    continue
+                }
+            }
+
+            break
+        }
+
+        let gapToToday = calendar.dateComponents([.day], from: latestQualifyingDate, to: dayKey).day ?? 0
+        if gapToToday > 1 {
+            if gapToToday == 2,
+               let missedDay = calendar.date(byAdding: .day, value: 1, to: latestQualifyingDate) {
+                let monthKey = qiyamGraceMonthKey(for: missedDay)
+                if !graceMonthsUsed.contains(monthKey) {
+                    return QuranQiyamStreakState(
+                        streak: streak,
+                        latestQualifyingDate: latestQualifyingDate,
+                        graceMonthsUsed: graceMonthsUsed.union([monthKey])
+                    )
+                }
+            }
+
+            return QuranQiyamStreakState(streak: 0, latestQualifyingDate: latestQualifyingDate, graceMonthsUsed: graceMonthsUsed)
+        }
+
+        return QuranQiyamStreakState(streak: streak, latestQualifyingDate: latestQualifyingDate, graceMonthsUsed: graceMonthsUsed)
+    }
+
+    private func qiyamGraceMonthKey(for date: Date) -> String {
+        let components = Calendar.current.dateComponents([.year, .month], from: date)
+        return "\(components.year ?? 0)-\(components.month ?? 0)"
+    }
+
+    private func qiyamMessage(
+        ayatCount: Int,
+        rank: QuranQiyamRank?,
+        reducedAyahs: Int,
+        streak: Int,
+        mode: QuranAdaptiveMode
+    ) -> String {
+        if ayatCount == 0 {
+            return streak > 0
+                ? "القنوت ليس بالكثرة فقط، بل بالدوام. عشر آيات تحفظ السلسلة."
+                : "عشر آيات تكفي لتبقى موصولًا، والنظام لا يطلب الكمال."
+        }
+
+        if mode == .reducedSafety && ayatCount >= 50 {
+            return reducedAyahs > 0
+                ? "قيامك الليلة حفظ اتصالك بالقرآن اليوم ورفع عنك \(reducedAyahs) آية من عبء المراجعة."
+                : "قيامك الليلة حفظ اتصالك بالقرآن اليوم."
+        }
+
+        if reducedAyahs > 0 {
+            return "قيامك الليلة رفع عنك عبئًا من المراجعة بمقدار \(reducedAyahs) آية."
+        }
+
+        switch rank {
+        case .muqantir:
+            return "هذه ليلة عالية الهمة، لكن الثبات هو الأصل."
+        case .qanit:
+            return "بلغت رتبة القانتين الليلة، والقنوت ليس بالكثرة فقط بل بالدوام."
+        case .preservedConnection:
+            return "عشر آيات حافظت على السلسلة."
+        case nil:
+            return "القيام اليوم خفيف، وعشر آيات تحفظ السلسلة."
+        }
     }
 
     private func memorizedRubPool(start: Int, end: Int) -> [QuranRubReference] {

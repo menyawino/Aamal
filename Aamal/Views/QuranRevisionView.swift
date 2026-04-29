@@ -1,5 +1,21 @@
 import SwiftUI
 
+private enum QuranQiyamInputMode: String, CaseIterable, Identifiable {
+    case ayahs
+    case pages
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .ayahs:
+            return "عدد الآيات"
+        case .pages:
+            return "عدد الصفحات"
+        }
+    }
+}
+
 struct QuranRevisionView: View {
     @ObservedObject var store: TaskStore
     @State private var juzCount: Int
@@ -13,6 +29,10 @@ struct QuranRevisionView: View {
     @State private var asrCapacity: Int
     @State private var maghribCapacity: Int
     @State private var ishaCapacity: Int
+    @State private var qiyamEnabled: Bool
+    @State private var qiyamInputMode: QuranQiyamInputMode = .ayahs
+    @State private var qiyamAyatInput: Int
+    @State private var qiyamPageInput: Int
     @State private var feedbackMessage: String = ""
     @State private var showSettingsSheet = false
 
@@ -20,6 +40,7 @@ struct QuranRevisionView: View {
         self.store = store
 
         let totalRubs = store.quranRevisionPlan.totalMemorizedRubs
+        let currentQiyamAyahs = store.todaysQiyamSession?.ayatCount ?? 0
         let juz = totalRubs / 8
         let remainder = totalRubs % 8
 
@@ -34,6 +55,9 @@ struct QuranRevisionView: View {
         _asrCapacity = State(initialValue: store.quranRevisionPlan.capacity(for: .asr))
         _maghribCapacity = State(initialValue: store.quranRevisionPlan.capacity(for: .maghrib))
         _ishaCapacity = State(initialValue: store.quranRevisionPlan.capacity(for: .isha))
+        _qiyamEnabled = State(initialValue: store.quranRevisionPlan.qiyamEnabled)
+        _qiyamAyatInput = State(initialValue: currentQiyamAyahs)
+        _qiyamPageInput = State(initialValue: currentQiyamAyahs == 0 ? 0 : Int(ceil(Double(currentQiyamAyahs) / Double(QiyamSession.estimatedAyahsPerPage))))
     }
 
     private var totalDraftRubs: Int {
@@ -61,6 +85,17 @@ struct QuranRevisionView: View {
                             .foregroundColor(AamalTheme.emerald)
                             .aamalCard()
                     }
+
+                    QuranQiyamCard(
+                        insight: todaysPlan.qiyamInsight,
+                        isEnabled: qiyamEnabled,
+                        inputMode: $qiyamInputMode,
+                        ayatInput: $qiyamAyatInput,
+                        pageInput: $qiyamPageInput,
+                        saveAction: saveQiyam,
+                        clearAction: clearQiyam,
+                        openSettingsAction: { showSettingsSheet = true }
+                    )
 
                     if let newItem = todaysPlan.newMemorization {
                         QuranNewMemorizationCard(item: newItem)
@@ -112,6 +147,7 @@ struct QuranRevisionView: View {
                             dailyGoalRubs: $dailyGoalRubs,
                             recentWindowRubs: $recentWindowRubs,
                             newMemorizationTargetRubs: $newMemorizationTargetRubs,
+                            qiyamEnabled: $qiyamEnabled,
                             fajrCapacity: $fajrCapacity,
                             dhuhrCapacity: $dhuhrCapacity,
                             asrCapacity: $asrCapacity,
@@ -153,6 +189,9 @@ struct QuranRevisionView: View {
         asrCapacity = store.quranRevisionPlan.capacity(for: .asr)
         maghribCapacity = store.quranRevisionPlan.capacity(for: .maghrib)
         ishaCapacity = store.quranRevisionPlan.capacity(for: .isha)
+        qiyamEnabled = store.quranRevisionPlan.qiyamEnabled
+        qiyamAyatInput = store.todaysQiyamSession?.ayatCount ?? 0
+        qiyamPageInput = qiyamAyatInput == 0 ? 0 : Int(ceil(Double(qiyamAyatInput) / Double(QiyamSession.estimatedAyahsPerPage)))
     }
 
     private func savePlan() {
@@ -164,6 +203,7 @@ struct QuranRevisionView: View {
                 dailyGoalRubs: dailyGoalRubs,
                 recentWindowRubs: recentWindowRubs,
                 newMemorizationTargetRubs: newMemorizationTargetRubs,
+                qiyamEnabled: qiyamEnabled,
                 prayerCapacities: [
                     .fajr: fajrCapacity,
                     .dhuhr: dhuhrCapacity,
@@ -180,6 +220,33 @@ struct QuranRevisionView: View {
 
         syncDraftFromStore()
         showSettingsSheet = false
+    }
+
+    private func saveQiyam() {
+        let ayatCount = draftQiyamAyatCount
+        if ayatCount == 0 {
+            feedbackMessage = clearQiyam() ? "تم مسح إدخال قيام الليل لليوم." : "أدخل عددًا تقريبيًا للآيات أو الصفحات أولًا."
+            return
+        }
+
+        let didSave = store.logQiyamSession(ayatCount: ayatCount)
+        if didSave {
+            qiyamAyatInput = ayatCount
+            qiyamPageInput = Int(ceil(Double(ayatCount) / Double(QiyamSession.estimatedAyahsPerPage)))
+            feedbackMessage = "تم حفظ قراءة قيام الليل ودمجها في خطة اليوم."
+        } else {
+            feedbackMessage = "تعذر حفظ قيام الليل. تحقق من تفعيل الدمج من الإعدادات."
+        }
+    }
+
+    @discardableResult
+    private func clearQiyam() -> Bool {
+        let didClear = store.clearQiyamSession()
+        if didClear {
+            qiyamAyatInput = 0
+            qiyamPageInput = 0
+        }
+        return didClear
     }
 
     private func markTodayCompleted() {
@@ -210,6 +277,15 @@ struct QuranRevisionView: View {
                 : "هذا الموضع غير موجود أصلًا في قائمة الضعيف."
         }
     }
+
+    private var draftQiyamAyatCount: Int {
+        switch qiyamInputMode {
+        case .ayahs:
+            return min(max(0, qiyamAyatInput), 2000)
+        case .pages:
+            return min(max(0, qiyamPageInput), 100) * QiyamSession.estimatedAyahsPerPage
+        }
+    }
 }
 
 private struct QuranAdaptiveHeroCard: View {
@@ -221,56 +297,89 @@ private struct QuranAdaptiveHeroCard: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("خطة اليوم")
-                        .font(.title3)
-                        .fontWeight(.bold)
-                    Label(plan.statusTitle, systemImage: plan.mode.systemImage)
-                        .font(.subheadline)
-                        .foregroundColor(quranModeTint(for: plan.mode))
-                    Text("الهدف: \(plan.goalTitle)")
+                    Text("لوحة اليوم")
                         .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(plan.statusTitle)
+                        .font(.title2)
+                        .fontWeight(.bold)
+                    Text("الهدف: \(plan.goalTitle)")
+                        .font(.subheadline)
                         .foregroundColor(.secondary)
                     Text(plan.guidance)
                         .font(.subheadline)
                         .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
-                Button(action: openSettingsAction) {
-                    Label("تعديل", systemImage: "slider.horizontal.3")
+
+                VStack(alignment: .trailing, spacing: 10) {
+                    QuranStatusBadge(
+                        title: plan.mode.shortTitle,
+                        systemImage: plan.mode.systemImage,
+                        tint: quranModeTint(for: plan.mode)
+                    )
+
+                    Button(action: openSettingsAction) {
+                        Label("تعديل", systemImage: "slider.horizontal.3")
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(AamalTheme.gold)
                 }
-                .buttonStyle(.bordered)
-                .tint(AamalTheme.gold)
             }
 
-            HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(store.quranRevisionRankTitle)
-                        .font(.headline)
-                    Text(plan.newMemorizationAllowed ? "الحفظ الجديد مفتوح اليوم" : "التوسعة متوقفة اليوم لصالح الحماية والاستعادة")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text("سلسلة المراجعة")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("\(store.quranRevisionPlan.streak) أيام")
-                        .font(.headline)
-                        .foregroundColor(AamalTheme.emerald)
-                }
-            }
+            QuranModeBanner(
+                title: store.quranRevisionRankTitle,
+                subtitle: plan.newMemorizationAllowed ? "الحفظ الجديد مفتوح اليوم" : "التوسعة متوقفة اليوم لصالح الحماية والاستعادة",
+                tint: quranModeTint(for: plan.mode)
+            )
 
             ProgressView(value: store.quranRevisionCompletionRate)
                 .tint(AamalTheme.gold)
 
-            HStack {
-                QuranMetricPill(title: "المحفوظ", value: quranDescribe(totalRubs: store.quranRevisionPlan.totalMemorizedRubs))
-                QuranMetricPill(title: "حد الأمان", value: "\(store.quranRevisionPlan.dailyGoalRubs) ربع")
-                QuranMetricPill(title: "سعة اليوم", value: "\(store.quranRevisionPlan.totalPrayerCapacityAyahs) آية")
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 2), spacing: 10) {
+                QuranMetricPill(
+                    title: "المحفوظ",
+                    value: quranDescribe(totalRubs: store.quranRevisionPlan.totalMemorizedRubs),
+                    accent: AamalTheme.emerald
+                )
+                QuranMetricPill(
+                    title: "سلسلة المراجعة",
+                    value: "\(store.quranRevisionPlan.streak) أيام",
+                    accent: AamalTheme.gold
+                )
+                QuranMetricPill(
+                    title: "حد الأمان",
+                    value: "\(store.quranRevisionPlan.dailyGoalRubs) ربع",
+                    accent: quranModeTint(for: plan.mode)
+                )
+                QuranMetricPill(
+                    title: "سعة اليوم",
+                    value: "\(store.quranRevisionPlan.totalPrayerCapacityAyahs) آية",
+                    accent: AamalTheme.ink.opacity(0.85)
+                )
             }
         }
-        .aamalCard()
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 22)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(.systemBackground),
+                            quranModeTint(for: plan.mode).opacity(0.08),
+                            AamalTheme.mint.opacity(0.18)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22)
+                        .stroke(quranModeTint(for: plan.mode).opacity(0.18), lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.08), radius: 14, x: 0, y: 8)
+        )
     }
 }
 
@@ -308,12 +417,12 @@ private struct QuranRequiredRevisionCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("المراجعة المطلوبة")
-                .font(.headline)
-
-            Text(subtitle)
-                .font(.caption)
-                .foregroundColor(.secondary)
+            QuranSectionHeader(
+                title: "المراجعة المطلوبة",
+                subtitle: subtitle,
+                tint: quranModeTint(for: plan.mode),
+                systemImage: "books.vertical"
+            )
 
             if plan.requiredRevision.isEmpty {
                 Text("اضبط المحفوظ وسعة الصلوات ليظهر الحد الأدنى للمراجعة تلقائيًا.")
@@ -347,6 +456,11 @@ private struct QuranRequiredRevisionCard: View {
                     }
                     .padding(12)
                     .background(quranTint(for: item.kind).opacity(0.08))
+                    .overlay(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 14)
+                            .fill(quranTint(for: item.kind))
+                            .frame(width: 4)
+                    }
                     .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
             }
@@ -373,8 +487,12 @@ private struct QuranPlanSafeguardsCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("ضمانات اليوم")
-                .font(.headline)
+            QuranSectionHeader(
+                title: "ضمانات اليوم",
+                subtitle: "رسائل تحافظ على الاستمرار بدون ضغط زائد.",
+                tint: quranModeTint(for: plan.mode),
+                systemImage: "checkmark.shield"
+            )
 
             ForEach(Array(plan.safeguards.enumerated()), id: \.offset) { _, safeguard in
                 HStack(alignment: .top, spacing: 10) {
@@ -388,6 +506,145 @@ private struct QuranPlanSafeguardsCard: View {
             }
         }
         .aamalCardSolid()
+    }
+}
+
+private struct QuranQiyamCard: View {
+    let insight: QuranQiyamDailyInsight
+    let isEnabled: Bool
+    @Binding var inputMode: QuranQiyamInputMode
+    @Binding var ayatInput: Int
+    @Binding var pageInput: Int
+    let saveAction: () -> Void
+    let clearAction: () -> Bool
+    let openSettingsAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("قيام الليل")
+                        .font(.title3)
+                        .fontWeight(.bold)
+                    Text(isEnabled ? "اختياري اليوم، ويُحتسب كجلسة مراجعة رحيمة." : "الدمج متوقف الآن ويمكن تفعيله من الإعدادات.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                if let rank = insight.rank {
+                    Label(rank.title, systemImage: rank.systemImage)
+                        .font(.caption)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(qiyamTint(for: rank).opacity(0.12))
+                        .clipShape(Capsule())
+                }
+            }
+
+            if isEnabled {
+                QuranModeBanner(
+                    title: insight.ayatCount == 0 ? "لا توجد جلسة محفوظة لهذه الليلة" : "تم تسجيل جلسة الليلة",
+                    subtitle: insight.reducedAyahs > 0
+                        ? "خفف القيام عنك \(insight.reducedAyahs) آية من عبء اليوم."
+                        : "حتى الجلسة الخفيفة تحفظ السلسلة وتبقي الباب مفتوحًا.",
+                    tint: qiyamBannerTint
+                )
+
+                Picker("نوع الإدخال", selection: $inputMode) {
+                    ForEach(QuranQiyamInputMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                if inputMode == .ayahs {
+                    QuranNumericControlRow(title: "قرأت تقريبًا", value: $ayatInput, range: 0...2000, suffix: "آية")
+                } else {
+                    QuranNumericControlRow(title: "قرأت تقريبًا", value: $pageInput, range: 0...100, suffix: "صفحة")
+                }
+
+                HStack(spacing: 10) {
+                    QuranMetricPill(title: "سلسلة القيام", value: "\(insight.streak) يوم", accent: AamalTheme.emerald)
+                    QuranMetricPill(title: "قراءة الليلة", value: insight.ayatCount == 0 ? "غير محفوظ" : "\(insight.ayatCount) آية", accent: qiyamBannerTint)
+                    QuranMetricPill(title: "تخفيف اليوم", value: insight.reducedAyahs == 0 ? "0" : "\(insight.reducedAyahs) آية", accent: AamalTheme.gold)
+                }
+
+                if inputMode == .pages {
+                    Text("\(pageInput) صفحات ≈ \(pageInput * QiyamSession.estimatedAyahsPerPage) آية")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                if insight.reductionPercentage > 0 {
+                    Text("التخفيف المحسوب اليوم: \(insight.reductionPercentage)% من عبء المراجعة، بحد أقصى 40%.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Text(insight.message)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+
+                HStack(spacing: 12) {
+                    Button(action: saveAction) {
+                        Text("حفظ قراءة الليلة")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(AamalTheme.ink)
+
+                    Button(action: {
+                        _ = clearAction()
+                    }) {
+                        Text("مسح")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .tint(AamalTheme.gold)
+                    .disabled(insight.ayatCount == 0)
+                }
+            } else {
+                Text(insight.message)
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+
+                Button(action: openSettingsAction) {
+                    Text("تفعيل دمج القيام")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(AamalTheme.emerald)
+            }
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 22)
+                .fill(
+                    LinearGradient(
+                        colors: [
+                            Color(.secondarySystemBackground),
+                            qiyamBannerTint.opacity(0.10),
+                            AamalTheme.gold.opacity(0.06)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 22)
+                        .stroke(qiyamBannerTint.opacity(0.18), lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.09), radius: 12, x: 0, y: 6)
+        )
+    }
+
+    private var qiyamBannerTint: Color {
+        if let rank = insight.rank {
+            return qiyamTint(for: rank)
+        }
+        return insight.ayatCount > 0 ? AamalTheme.gold : AamalTheme.emerald
     }
 }
 
@@ -445,12 +702,12 @@ private struct QuranPrayerDistributionCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("توزيع المراجعة على الصلوات")
-                .font(.headline)
-
-            Text(prayerSubtitle)
-                .font(.caption)
-                .foregroundColor(.secondary)
+            QuranSectionHeader(
+                title: "توزيع المراجعة على الصلوات",
+                subtitle: prayerSubtitle,
+                tint: quranModeTint(for: plan.mode),
+                systemImage: "sun.and.horizon"
+            )
 
             ForEach(plan.prayerAssignments) { assignment in
                 QuranPrayerAssignmentCard(
@@ -590,6 +847,7 @@ private struct QuranAdaptiveSettingsCard: View {
     @Binding var dailyGoalRubs: Int
     @Binding var recentWindowRubs: Int
     @Binding var newMemorizationTargetRubs: Int
+    @Binding var qiyamEnabled: Bool
     @Binding var fajrCapacity: Int
     @Binding var dhuhrCapacity: Int
     @Binding var asrCapacity: Int
@@ -624,6 +882,9 @@ private struct QuranAdaptiveSettingsCard: View {
             QuranNumericControlRow(title: "حد المراجعة اليومي", value: $dailyGoalRubs, range: 1...12, suffix: "ربع")
             QuranNumericControlRow(title: "نافذة السبقي", value: $recentWindowRubs, range: 1...maxRecentWindow, suffix: "ربع")
             QuranNumericControlRow(title: "هدف الحفظ الجديد", value: $newMemorizationTargetRubs, range: 0...maxNewTarget, suffix: "ربع")
+
+            Toggle("دمج قيام الليل في الخطة", isOn: $qiyamEnabled)
+                .tint(AamalTheme.emerald)
 
             Divider()
 
@@ -693,20 +954,93 @@ private struct QuranAdaptiveSettingsCard: View {
 private struct QuranMetricPill: View {
     let title: String
     let value: String
+    var accent: Color = AamalTheme.gold
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 6) {
             Text(value)
                 .font(.headline)
-                .multilineTextAlignment(.center)
+                .foregroundColor(AamalTheme.ink)
             Text(title)
                 .font(.caption2)
                 .foregroundColor(.secondary)
         }
-        .frame(maxWidth: .infinity)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 10)
-        .background(AamalTheme.gold.opacity(0.08))
+        .padding(.horizontal, 12)
+        .background(accent.opacity(0.10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(accent.opacity(0.14), lineWidth: 1)
+        )
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct QuranSectionHeader: View {
+    let title: String
+    let subtitle: String
+    let tint: Color
+    let systemImage: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: systemImage)
+                .foregroundColor(tint)
+                .frame(width: 26, height: 26)
+                .background(tint.opacity(0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(title)
+                    .font(.headline)
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+}
+
+private struct QuranStatusBadge: View {
+    let title: String
+    let systemImage: String
+    let tint: Color
+
+    var body: some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption)
+            .fontWeight(.semibold)
+            .foregroundColor(tint)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(tint.opacity(0.12))
+            .clipShape(Capsule())
+    }
+}
+
+private struct QuranModeBanner: View {
+    let title: String
+    let subtitle: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+            Text(subtitle)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(tint.opacity(0.10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(tint.opacity(0.14), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 }
 
@@ -799,5 +1133,31 @@ private func quranModeTint(for mode: QuranAdaptiveMode) -> Color {
         return AamalTheme.ink
     case .recoveryRestabilization:
         return AamalTheme.mint
+    }
+}
+
+private extension QuranAdaptiveMode {
+    var shortTitle: String {
+        switch self {
+        case .normal:
+            return "استقرار"
+        case .reducedSafety:
+            return "وقاية"
+        case .recoveryReentry:
+            return "عودة"
+        case .recoveryRestabilization:
+            return "تثبيت"
+        }
+    }
+}
+
+private func qiyamTint(for rank: QuranQiyamRank) -> Color {
+    switch rank {
+    case .preservedConnection:
+        return AamalTheme.emerald
+    case .qanit:
+        return AamalTheme.gold
+    case .muqantir:
+        return AamalTheme.ink
     }
 }
