@@ -78,17 +78,104 @@ struct CompensationProgress: Codable {
     }
 }
 
+public struct QuranAyahReference: Codable, Hashable {
+    let surahIndex: Int
+    let ayah: Int
+
+    var surah: QuranSurahInfo? {
+        QuranAyahCatalog.surah(at: surahIndex)
+    }
+
+    var surahName: String {
+        surah?.name ?? "سورة غير معروفة"
+    }
+
+    var title: String {
+        "سورة \(surahName) • آية \(ayah)"
+    }
+
+    var shortTitle: String {
+        "\(surahName) \(ayah)"
+    }
+}
+
+public struct QuranSurahInfo: Identifiable, Hashable {
+    let index: Int
+    let name: String
+    let ayahCount: Int
+
+    public var id: Int { index }
+}
+
+public enum QuranAyahCatalog {
+    static let surahs: [QuranSurahInfo] = quranSurahCatalog
+
+    static func surah(at index: Int) -> QuranSurahInfo? {
+        guard (1...surahs.count).contains(index) else { return nil }
+        return surahs[index - 1]
+    }
+
+    static func reference(surahIndex: Int, ayah: Int) -> QuranAyahReference? {
+        guard let surah = surah(at: surahIndex), (1...surah.ayahCount).contains(ayah) else {
+            return nil
+        }
+
+        return QuranAyahReference(surahIndex: surahIndex, ayah: ayah)
+    }
+
+    static func globalAyahIndex(for reference: QuranAyahReference) -> Int? {
+        guard let surah = surah(at: reference.surahIndex),
+              (1...surah.ayahCount).contains(reference.ayah) else {
+            return nil
+        }
+
+        let previousAyahs = surahs.prefix(reference.surahIndex - 1).reduce(0) { partial, surah in
+            partial + surah.ayahCount
+        }
+        return previousAyahs + reference.ayah
+    }
+
+    static func ayahCount(from start: QuranAyahReference, to end: QuranAyahReference) -> Int? {
+        guard let startIndex = globalAyahIndex(for: start),
+              let endIndex = globalAyahIndex(for: end),
+              endIndex > startIndex else {
+            return nil
+        }
+
+        return endIndex - startIndex
+    }
+}
+
 struct QiyamSession: Identifiable, Codable, Hashable {
     static let estimatedAyahsPerPage = 20
 
     let date: Date
     let ayatCount: Int
+    let startAyah: QuranAyahReference?
+    let endAyah: QuranAyahReference?
+
+    init(
+        date: Date,
+        ayatCount: Int,
+        startAyah: QuranAyahReference? = nil,
+        endAyah: QuranAyahReference? = nil
+    ) {
+        self.date = date
+        self.ayatCount = ayatCount
+        self.startAyah = startAyah
+        self.endAyah = endAyah
+    }
 
     var id: Date { date }
 
     var estimatedPageCount: Int {
         guard ayatCount > 0 else { return 0 }
         return Int(ceil(Double(ayatCount) / Double(Self.estimatedAyahsPerPage)))
+    }
+
+    var rangeSummary: String? {
+        guard let startAyah, let endAyah else { return nil }
+        return "\(startAyah.title) إلى \(endAyah.title)"
     }
 }
 
@@ -149,6 +236,10 @@ struct QuranQiyamDailyInsight: Hashable {
 
     var reductionPercentage: Int {
         Int((reductionFraction * 100).rounded())
+    }
+
+    var rangeSummary: String? {
+        session?.rangeSummary
     }
 }
 
@@ -298,18 +389,37 @@ struct QuranRevisionPlan: Codable {
     }
 
     private static func normalizedQiyamSessions(from values: [QiyamSession]) -> [QiyamSession] {
-        var normalizedByDate: [Date: Int] = [:]
+        var normalizedByDate: [Date: QiyamSession] = [:]
 
         for session in values {
             let dayKey = Calendar.current.startOfDay(for: session.date)
-            let ayatCount = min(max(0, session.ayatCount), 2000)
-            guard ayatCount > 0 else { continue }
-            normalizedByDate[dayKey] = ayatCount
+            guard let normalizedSession = normalizedQiyamSession(session, dayKey: dayKey) else {
+                continue
+            }
+            normalizedByDate[dayKey] = normalizedSession
         }
 
-        return normalizedByDate.keys.sorted().map { date in
-            QiyamSession(date: date, ayatCount: normalizedByDate[date] ?? 0)
+        return normalizedByDate.keys.sorted().compactMap { date in
+            normalizedByDate[date]
         }
+    }
+
+    private static func normalizedQiyamSession(_ session: QiyamSession, dayKey: Date) -> QiyamSession? {
+        if let startAyah = session.startAyah,
+           let endAyah = session.endAyah,
+           let computedAyahs = QuranAyahCatalog.ayahCount(from: startAyah, to: endAyah),
+           (1...2000).contains(computedAyahs) {
+            return QiyamSession(
+                date: dayKey,
+                ayatCount: computedAyahs,
+                startAyah: startAyah,
+                endAyah: endAyah
+            )
+        }
+
+        let ayatCount = min(max(0, session.ayatCount), 2000)
+        guard ayatCount > 0 else { return nil }
+        return QiyamSession(date: dayKey, ayatCount: ayatCount)
     }
 
     private static func normalizedWeakRubIndices(from values: [Int], totalMemorizedRubs: Int) -> [Int] {
@@ -619,6 +729,123 @@ struct QuranDailyAssignment: Identifiable {
 
     var id: Date { date }
 }
+
+private let quranSurahCatalog: [QuranSurahInfo] = [
+    QuranSurahInfo(index: 1, name: "الفاتحة", ayahCount: 7),
+    QuranSurahInfo(index: 2, name: "البقرة", ayahCount: 286),
+    QuranSurahInfo(index: 3, name: "آل عمران", ayahCount: 200),
+    QuranSurahInfo(index: 4, name: "النساء", ayahCount: 176),
+    QuranSurahInfo(index: 5, name: "المائدة", ayahCount: 120),
+    QuranSurahInfo(index: 6, name: "الأنعام", ayahCount: 165),
+    QuranSurahInfo(index: 7, name: "الأعراف", ayahCount: 206),
+    QuranSurahInfo(index: 8, name: "الأنفال", ayahCount: 75),
+    QuranSurahInfo(index: 9, name: "التوبة", ayahCount: 129),
+    QuranSurahInfo(index: 10, name: "يونس", ayahCount: 109),
+    QuranSurahInfo(index: 11, name: "هود", ayahCount: 123),
+    QuranSurahInfo(index: 12, name: "يوسف", ayahCount: 111),
+    QuranSurahInfo(index: 13, name: "الرعد", ayahCount: 43),
+    QuranSurahInfo(index: 14, name: "إبراهيم", ayahCount: 52),
+    QuranSurahInfo(index: 15, name: "الحجر", ayahCount: 99),
+    QuranSurahInfo(index: 16, name: "النحل", ayahCount: 128),
+    QuranSurahInfo(index: 17, name: "الإسراء", ayahCount: 111),
+    QuranSurahInfo(index: 18, name: "الكهف", ayahCount: 110),
+    QuranSurahInfo(index: 19, name: "مريم", ayahCount: 98),
+    QuranSurahInfo(index: 20, name: "طه", ayahCount: 135),
+    QuranSurahInfo(index: 21, name: "الأنبياء", ayahCount: 112),
+    QuranSurahInfo(index: 22, name: "الحج", ayahCount: 78),
+    QuranSurahInfo(index: 23, name: "المؤمنون", ayahCount: 118),
+    QuranSurahInfo(index: 24, name: "النور", ayahCount: 64),
+    QuranSurahInfo(index: 25, name: "الفرقان", ayahCount: 77),
+    QuranSurahInfo(index: 26, name: "الشعراء", ayahCount: 227),
+    QuranSurahInfo(index: 27, name: "النمل", ayahCount: 93),
+    QuranSurahInfo(index: 28, name: "القصص", ayahCount: 88),
+    QuranSurahInfo(index: 29, name: "العنكبوت", ayahCount: 69),
+    QuranSurahInfo(index: 30, name: "الروم", ayahCount: 60),
+    QuranSurahInfo(index: 31, name: "لقمان", ayahCount: 34),
+    QuranSurahInfo(index: 32, name: "السجدة", ayahCount: 30),
+    QuranSurahInfo(index: 33, name: "الأحزاب", ayahCount: 73),
+    QuranSurahInfo(index: 34, name: "سبأ", ayahCount: 54),
+    QuranSurahInfo(index: 35, name: "فاطر", ayahCount: 45),
+    QuranSurahInfo(index: 36, name: "يس", ayahCount: 83),
+    QuranSurahInfo(index: 37, name: "الصافات", ayahCount: 182),
+    QuranSurahInfo(index: 38, name: "ص", ayahCount: 88),
+    QuranSurahInfo(index: 39, name: "الزمر", ayahCount: 75),
+    QuranSurahInfo(index: 40, name: "غافر", ayahCount: 85),
+    QuranSurahInfo(index: 41, name: "فصلت", ayahCount: 54),
+    QuranSurahInfo(index: 42, name: "الشورى", ayahCount: 53),
+    QuranSurahInfo(index: 43, name: "الزخرف", ayahCount: 89),
+    QuranSurahInfo(index: 44, name: "الدخان", ayahCount: 59),
+    QuranSurahInfo(index: 45, name: "الجاثية", ayahCount: 37),
+    QuranSurahInfo(index: 46, name: "الأحقاف", ayahCount: 35),
+    QuranSurahInfo(index: 47, name: "محمد", ayahCount: 38),
+    QuranSurahInfo(index: 48, name: "الفتح", ayahCount: 29),
+    QuranSurahInfo(index: 49, name: "الحجرات", ayahCount: 18),
+    QuranSurahInfo(index: 50, name: "ق", ayahCount: 45),
+    QuranSurahInfo(index: 51, name: "الذاريات", ayahCount: 60),
+    QuranSurahInfo(index: 52, name: "الطور", ayahCount: 49),
+    QuranSurahInfo(index: 53, name: "النجم", ayahCount: 62),
+    QuranSurahInfo(index: 54, name: "القمر", ayahCount: 55),
+    QuranSurahInfo(index: 55, name: "الرحمن", ayahCount: 78),
+    QuranSurahInfo(index: 56, name: "الواقعة", ayahCount: 96),
+    QuranSurahInfo(index: 57, name: "الحديد", ayahCount: 29),
+    QuranSurahInfo(index: 58, name: "المجادلة", ayahCount: 22),
+    QuranSurahInfo(index: 59, name: "الحشر", ayahCount: 24),
+    QuranSurahInfo(index: 60, name: "الممتحنة", ayahCount: 13),
+    QuranSurahInfo(index: 61, name: "الصف", ayahCount: 14),
+    QuranSurahInfo(index: 62, name: "الجمعة", ayahCount: 11),
+    QuranSurahInfo(index: 63, name: "المنافقون", ayahCount: 11),
+    QuranSurahInfo(index: 64, name: "التغابن", ayahCount: 18),
+    QuranSurahInfo(index: 65, name: "الطلاق", ayahCount: 12),
+    QuranSurahInfo(index: 66, name: "التحريم", ayahCount: 12),
+    QuranSurahInfo(index: 67, name: "الملك", ayahCount: 30),
+    QuranSurahInfo(index: 68, name: "القلم", ayahCount: 52),
+    QuranSurahInfo(index: 69, name: "الحاقة", ayahCount: 52),
+    QuranSurahInfo(index: 70, name: "المعارج", ayahCount: 44),
+    QuranSurahInfo(index: 71, name: "نوح", ayahCount: 28),
+    QuranSurahInfo(index: 72, name: "الجن", ayahCount: 28),
+    QuranSurahInfo(index: 73, name: "المزمل", ayahCount: 20),
+    QuranSurahInfo(index: 74, name: "المدثر", ayahCount: 56),
+    QuranSurahInfo(index: 75, name: "القيامة", ayahCount: 40),
+    QuranSurahInfo(index: 76, name: "الإنسان", ayahCount: 31),
+    QuranSurahInfo(index: 77, name: "المرسلات", ayahCount: 50),
+    QuranSurahInfo(index: 78, name: "النبأ", ayahCount: 40),
+    QuranSurahInfo(index: 79, name: "النازعات", ayahCount: 46),
+    QuranSurahInfo(index: 80, name: "عبس", ayahCount: 42),
+    QuranSurahInfo(index: 81, name: "التكوير", ayahCount: 29),
+    QuranSurahInfo(index: 82, name: "الانفطار", ayahCount: 19),
+    QuranSurahInfo(index: 83, name: "المطففين", ayahCount: 36),
+    QuranSurahInfo(index: 84, name: "الانشقاق", ayahCount: 25),
+    QuranSurahInfo(index: 85, name: "البروج", ayahCount: 22),
+    QuranSurahInfo(index: 86, name: "الطارق", ayahCount: 17),
+    QuranSurahInfo(index: 87, name: "الأعلى", ayahCount: 19),
+    QuranSurahInfo(index: 88, name: "الغاشية", ayahCount: 26),
+    QuranSurahInfo(index: 89, name: "الفجر", ayahCount: 30),
+    QuranSurahInfo(index: 90, name: "البلد", ayahCount: 20),
+    QuranSurahInfo(index: 91, name: "الشمس", ayahCount: 15),
+    QuranSurahInfo(index: 92, name: "الليل", ayahCount: 21),
+    QuranSurahInfo(index: 93, name: "الضحى", ayahCount: 11),
+    QuranSurahInfo(index: 94, name: "الشرح", ayahCount: 8),
+    QuranSurahInfo(index: 95, name: "التين", ayahCount: 8),
+    QuranSurahInfo(index: 96, name: "العلق", ayahCount: 19),
+    QuranSurahInfo(index: 97, name: "القدر", ayahCount: 5),
+    QuranSurahInfo(index: 98, name: "البينة", ayahCount: 8),
+    QuranSurahInfo(index: 99, name: "الزلزلة", ayahCount: 8),
+    QuranSurahInfo(index: 100, name: "العاديات", ayahCount: 11),
+    QuranSurahInfo(index: 101, name: "القارعة", ayahCount: 11),
+    QuranSurahInfo(index: 102, name: "التكاثر", ayahCount: 8),
+    QuranSurahInfo(index: 103, name: "العصر", ayahCount: 3),
+    QuranSurahInfo(index: 104, name: "الهمزة", ayahCount: 9),
+    QuranSurahInfo(index: 105, name: "الفيل", ayahCount: 5),
+    QuranSurahInfo(index: 106, name: "قريش", ayahCount: 4),
+    QuranSurahInfo(index: 107, name: "الماعون", ayahCount: 7),
+    QuranSurahInfo(index: 108, name: "الكوثر", ayahCount: 3),
+    QuranSurahInfo(index: 109, name: "الكافرون", ayahCount: 6),
+    QuranSurahInfo(index: 110, name: "النصر", ayahCount: 3),
+    QuranSurahInfo(index: 111, name: "المسد", ayahCount: 5),
+    QuranSurahInfo(index: 112, name: "الإخلاص", ayahCount: 4),
+    QuranSurahInfo(index: 113, name: "الفلق", ayahCount: 5),
+    QuranSurahInfo(index: 114, name: "الناس", ayahCount: 6)
+]
 
 private let quranRubMetadataLookup: [Int: QuranRubMetadata] = [
     1: QuranRubMetadata(startPage: 1, endPage: 5, startSurah: "الفاتحة", endSurah: "البقرة"),

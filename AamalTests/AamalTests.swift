@@ -116,12 +116,12 @@ struct AamalTests {
             prayerCapacities: [.fajr: 12, .dhuhr: 12, .asr: 12, .maghrib: 12, .isha: 12]
         )
 
-        #expect(store.logQiyamSession(ayatCount: 120, on: dayOne))
+        #expect(store.logQiyamSession(from: qiyamAyah(2, 1), to: qiyamAyah(2, 121), on: dayOne))
         var plan = store.adaptiveQuranPlan(for: dayOne)
         #expect(plan.qiyamInsight.rank == .qanit)
         #expect(plan.qiyamInsight.streak == 1)
 
-        #expect(store.logQiyamSession(ayatCount: 20, on: dayThree))
+        #expect(store.logQiyamSession(from: qiyamAyah(2, 121), to: qiyamAyah(2, 141), on: dayThree))
         plan = store.adaptiveQuranPlan(for: dayThree)
         #expect(plan.qiyamInsight.rank == .preservedConnection)
         #expect(plan.qiyamInsight.streak == 2)
@@ -152,7 +152,7 @@ struct AamalTests {
         let baselineAyahs = baselinePlan.requiredRevision.reduce(0) { $0 + $1.estimatedAyahs }
         #expect(baselineAyahs > 0)
 
-        #expect(store.logQiyamSession(ayatCount: 150, on: referenceDate))
+        #expect(store.logQiyamSession(from: qiyamAyah(2, 1), to: qiyamAyah(2, 151), on: referenceDate))
 
         let adjustedPlan = store.adaptiveQuranPlan(for: referenceDate)
         let adjustedAyahs = adjustedPlan.requiredRevision.reduce(0) { $0 + $1.estimatedAyahs }
@@ -179,7 +179,7 @@ struct AamalTests {
             prayerCapacities: [.fajr: 10, .dhuhr: 0, .asr: 0, .maghrib: 0, .isha: 0]
         )
 
-        #expect(store.logQiyamSession(ayatCount: 60, on: referenceDate))
+        #expect(store.logQiyamSession(from: qiyamAyah(2, 1), to: qiyamAyah(2, 61), on: referenceDate))
 
         let plan = store.adaptiveQuranPlan(for: referenceDate)
         #expect(plan.mode == .reducedSafety)
@@ -187,10 +187,52 @@ struct AamalTests {
         #expect(plan.qiyamInsight.message.contains("حفظ اتصالك بالقرآن اليوم"))
     }
 
+    @Test func qiyamStopPointLoggingCalculatesAndPersistsRange() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let (store, _) = makeStore(defaults: defaults)
+        let dayOne = qiyamDate(offsetDays: 0)
+        let dayTwo = qiyamDate(offsetDays: 1)
+
+        store.configureQuranRevisionPlan(
+            juzCount: 1,
+            additionalHizb: 0,
+            additionalRub: 0,
+            dailyGoalRubs: 2,
+            recentWindowRubs: 4,
+            newMemorizationTargetRubs: 0,
+            qiyamEnabled: true,
+            prayerCapacities: [.fajr: 12, .dhuhr: 12, .asr: 12, .maghrib: 12, .isha: 12]
+        )
+
+        #expect(store.logQiyamSession(from: qiyamAyah(2, 1), to: qiyamAyah(2, 31), on: dayOne))
+
+        let savedSession = try #require(store.qiyamSession(on: dayOne))
+        #expect(savedSession.ayatCount == 30)
+        #expect(savedSession.startAyah == qiyamAyah(2, 1))
+        #expect(savedSession.endAyah == qiyamAyah(2, 31))
+        #expect(store.qiyamLoggingStartReference(on: dayTwo) == qiyamAyah(2, 31))
+
+        let reloadedStore = TaskStore(
+            categories: [Self.testCategory(taskScore: 5)],
+            userDefaults: defaults,
+            requestsNotificationPermission: false
+        )
+        let reloadedSession = try #require(reloadedStore.qiyamSession(on: dayOne))
+        #expect(reloadedSession.ayatCount == 30)
+        #expect(reloadedSession.startAyah == qiyamAyah(2, 1))
+        #expect(reloadedSession.endAyah == qiyamAyah(2, 31))
+    }
+
     private static let referenceDate = Date(timeIntervalSince1970: 1_720_000_000)
 
     private func qiyamDate(offsetDays: Int) -> Date {
         Calendar.current.date(byAdding: .day, value: offsetDays, to: Calendar.current.startOfDay(for: Self.referenceDate)) ?? Self.referenceDate
+    }
+
+    private func qiyamAyah(_ surahIndex: Int, _ ayah: Int) -> QuranAyahReference {
+        try! #require(QuranAyahCatalog.reference(surahIndex: surahIndex, ayah: ayah))
     }
 
     private func makeDefaults() throws -> (UserDefaults, String) {

@@ -618,6 +618,14 @@ final class TaskStore: ObservableObject {
         quranRevisionPlan.qiyamSession(on: date)
     }
 
+    func qiyamLoggingStartReference(on date: Date = Date()) -> QuranAyahReference? {
+        if let sessionStart = quranRevisionPlan.qiyamSession(on: date)?.startAyah {
+            return sessionStart
+        }
+
+        return previousQiyamStopPoint(before: date)
+    }
+
     @discardableResult
     func logQiyamSession(ayatCount: Int, on date: Date = Date()) -> Bool {
         guard quranRevisionPlan.qiyamEnabled else { return false }
@@ -638,6 +646,33 @@ final class TaskStore: ObservableObject {
     }
 
     @discardableResult
+    func logQiyamSession(
+        from startAyah: QuranAyahReference,
+        to endAyah: QuranAyahReference,
+        on date: Date = Date()
+    ) -> Bool {
+        guard quranRevisionPlan.qiyamEnabled,
+              let ayatCount = QuranAyahCatalog.ayahCount(from: startAyah, to: endAyah),
+              (1...2000).contains(ayatCount) else {
+            return false
+        }
+
+        let dayKey = dateKey(date)
+        quranRevisionPlan.qiyamSessions.removeAll { $0.date == dayKey }
+        quranRevisionPlan.qiyamSessions.append(
+            QiyamSession(
+                date: dayKey,
+                ayatCount: ayatCount,
+                startAyah: startAyah,
+                endAyah: endAyah
+            )
+        )
+        quranRevisionPlan.normalize()
+        saveData()
+        return true
+    }
+
+    @discardableResult
     func clearQiyamSession(on date: Date = Date()) -> Bool {
         let dayKey = dateKey(date)
         let previousCount = quranRevisionPlan.qiyamSessions.count
@@ -647,6 +682,15 @@ final class TaskStore: ObservableObject {
             saveData()
         }
         return didRemove
+    }
+
+    private func previousQiyamStopPoint(before date: Date) -> QuranAyahReference? {
+        let dayKey = dateKey(date)
+        return quranRevisionPlan.qiyamSessions
+            .filter { $0.date < dayKey }
+            .sorted { $0.date < $1.date }
+            .last?
+            .endAyah
     }
 
     func isQuranRevisionCompleted(on date: Date = Date()) -> Bool {

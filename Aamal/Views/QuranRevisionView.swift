@@ -1,21 +1,5 @@
 import SwiftUI
 
-private enum QuranQiyamInputMode: String, CaseIterable, Identifiable {
-    case ayahs
-    case pages
-
-    var id: String { rawValue }
-
-    var title: String {
-        switch self {
-        case .ayahs:
-            return "عدد الآيات"
-        case .pages:
-            return "عدد الصفحات"
-        }
-    }
-}
-
 struct QuranRevisionView: View {
     @ObservedObject var store: TaskStore
     @State private var juzCount: Int
@@ -30,9 +14,10 @@ struct QuranRevisionView: View {
     @State private var maghribCapacity: Int
     @State private var ishaCapacity: Int
     @State private var qiyamEnabled: Bool
-    @State private var qiyamInputMode: QuranQiyamInputMode = .ayahs
-    @State private var qiyamAyatInput: Int
-    @State private var qiyamPageInput: Int
+    @State private var qiyamStartSurahIndex: Int
+    @State private var qiyamStartAyah: Int
+    @State private var qiyamStopSurahIndex: Int
+    @State private var qiyamStopAyah: Int
     @State private var feedbackMessage: String = ""
     @State private var showSettingsSheet = false
 
@@ -40,7 +25,10 @@ struct QuranRevisionView: View {
         self.store = store
 
         let totalRubs = store.quranRevisionPlan.totalMemorizedRubs
-        let currentQiyamAyahs = store.todaysQiyamSession?.ayatCount ?? 0
+        let qiyamStartReference = store.todaysQiyamSession?.startAyah
+            ?? store.qiyamLoggingStartReference()
+            ?? QuranAyahCatalog.reference(surahIndex: 1, ayah: 1)
+        let qiyamStopReference = store.todaysQiyamSession?.endAyah ?? qiyamStartReference
         let juz = totalRubs / 8
         let remainder = totalRubs % 8
 
@@ -56,8 +44,10 @@ struct QuranRevisionView: View {
         _maghribCapacity = State(initialValue: store.quranRevisionPlan.capacity(for: .maghrib))
         _ishaCapacity = State(initialValue: store.quranRevisionPlan.capacity(for: .isha))
         _qiyamEnabled = State(initialValue: store.quranRevisionPlan.qiyamEnabled)
-        _qiyamAyatInput = State(initialValue: currentQiyamAyahs)
-        _qiyamPageInput = State(initialValue: currentQiyamAyahs == 0 ? 0 : Int(ceil(Double(currentQiyamAyahs) / Double(QiyamSession.estimatedAyahsPerPage))))
+        _qiyamStartSurahIndex = State(initialValue: qiyamStartReference?.surahIndex ?? 1)
+        _qiyamStartAyah = State(initialValue: qiyamStartReference?.ayah ?? 1)
+        _qiyamStopSurahIndex = State(initialValue: qiyamStopReference?.surahIndex ?? 1)
+        _qiyamStopAyah = State(initialValue: qiyamStopReference?.ayah ?? 1)
     }
 
     private var totalDraftRubs: Int {
@@ -89,9 +79,15 @@ struct QuranRevisionView: View {
                     QuranQiyamCard(
                         insight: todaysPlan.qiyamInsight,
                         isEnabled: qiyamEnabled,
-                        inputMode: $qiyamInputMode,
-                        ayatInput: $qiyamAyatInput,
-                        pageInput: $qiyamPageInput,
+                        startLocked: qiyamStartIsLocked,
+                        startSummary: qiyamStartReferenceDraft?.title,
+                        savedRangeSummary: todaysPlan.qiyamInsight.rangeSummary,
+                        startSurahIndex: $qiyamStartSurahIndex,
+                        startAyah: $qiyamStartAyah,
+                        stopSurahIndex: $qiyamStopSurahIndex,
+                        stopAyah: $qiyamStopAyah,
+                        computedAyahCount: draftQiyamAyahCount,
+                        validationMessage: qiyamValidationMessage,
                         saveAction: saveQiyam,
                         clearAction: clearQiyam,
                         openSettingsAction: { showSettingsSheet = true }
@@ -189,8 +185,14 @@ struct QuranRevisionView: View {
         maghribCapacity = store.quranRevisionPlan.capacity(for: .maghrib)
         ishaCapacity = store.quranRevisionPlan.capacity(for: .isha)
         qiyamEnabled = store.quranRevisionPlan.qiyamEnabled
-        qiyamAyatInput = store.todaysQiyamSession?.ayatCount ?? 0
-        qiyamPageInput = qiyamAyatInput == 0 ? 0 : Int(ceil(Double(qiyamAyatInput) / Double(QiyamSession.estimatedAyahsPerPage)))
+        let qiyamStartReference = store.todaysQiyamSession?.startAyah
+            ?? store.qiyamLoggingStartReference()
+            ?? QuranAyahCatalog.reference(surahIndex: 1, ayah: 1)
+        let qiyamStopReference = store.todaysQiyamSession?.endAyah ?? qiyamStartReference
+        qiyamStartSurahIndex = qiyamStartReference?.surahIndex ?? 1
+        qiyamStartAyah = qiyamStartReference?.ayah ?? 1
+        qiyamStopSurahIndex = qiyamStopReference?.surahIndex ?? qiyamStartSurahIndex
+        qiyamStopAyah = qiyamStopReference?.ayah ?? qiyamStartAyah
     }
 
     private func savePlan() {
@@ -222,19 +224,23 @@ struct QuranRevisionView: View {
     }
 
     private func saveQiyam() {
-        let ayatCount = draftQiyamAyatCount
-        if ayatCount == 0 {
-            feedbackMessage = clearQiyam() ? "تم مسح إدخال قيام الليل لليوم." : "أدخل عددًا تقريبيًا للآيات أو الصفحات أولًا."
+        guard let startAyah = qiyamStartReferenceDraft,
+              let stopAyah = qiyamStopReferenceDraft else {
+            feedbackMessage = "حدد نقطة البداية وآية التوقف أولًا."
             return
         }
 
-        let didSave = store.logQiyamSession(ayatCount: ayatCount)
+        guard let ayatCount = draftQiyamAyahCount else {
+            feedbackMessage = "اختر آية توقف بعد نقطة البداية ليحسب التطبيق مقدار ما قرأت."
+            return
+        }
+
+        let didSave = store.logQiyamSession(from: startAyah, to: stopAyah)
         if didSave {
-            qiyamAyatInput = ayatCount
-            qiyamPageInput = Int(ceil(Double(ayatCount) / Double(QiyamSession.estimatedAyahsPerPage)))
-            feedbackMessage = "تم حفظ قراءة قيام الليل ودمجها في خطة اليوم."
+            feedbackMessage = "تم حفظ موضع التوقف، واحتسب التطبيق \(ayatCount) آية تلقائيًا."
+            syncDraftFromStore()
         } else {
-            feedbackMessage = "تعذر حفظ قيام الليل. تحقق من تفعيل الدمج من الإعدادات."
+            feedbackMessage = "تعذر حفظ موضع التوقف. تأكد أن الموضع الجديد بعد البداية وأن المدى ليس مبالغًا فيه."
         }
     }
 
@@ -242,8 +248,7 @@ struct QuranRevisionView: View {
     private func clearQiyam() -> Bool {
         let didClear = store.clearQiyamSession()
         if didClear {
-            qiyamAyatInput = 0
-            qiyamPageInput = 0
+            syncDraftFromStore()
         }
         return didClear
     }
@@ -277,13 +282,31 @@ struct QuranRevisionView: View {
         }
     }
 
-    private var draftQiyamAyatCount: Int {
-        switch qiyamInputMode {
-        case .ayahs:
-            return min(max(0, qiyamAyatInput), 2000)
-        case .pages:
-            return min(max(0, qiyamPageInput), 100) * QiyamSession.estimatedAyahsPerPage
+    private var qiyamStartIsLocked: Bool {
+        store.qiyamLoggingStartReference() != nil || store.todaysQiyamSession?.startAyah != nil
+    }
+
+    private var qiyamStartReferenceDraft: QuranAyahReference? {
+        QuranAyahCatalog.reference(surahIndex: qiyamStartSurahIndex, ayah: qiyamStartAyah)
+    }
+
+    private var qiyamStopReferenceDraft: QuranAyahReference? {
+        QuranAyahCatalog.reference(surahIndex: qiyamStopSurahIndex, ayah: qiyamStopAyah)
+    }
+
+    private var draftQiyamAyahCount: Int? {
+        guard let startAyah = qiyamStartReferenceDraft,
+              let stopAyah = qiyamStopReferenceDraft else {
+            return nil
         }
+
+        return QuranAyahCatalog.ayahCount(from: startAyah, to: stopAyah)
+    }
+
+    private var qiyamValidationMessage: String? {
+        guard qiyamEnabled else { return nil }
+        guard draftQiyamAyahCount == nil else { return nil }
+        return "يجب أن تكون آية التوقف بعد نقطة البداية حتى يحسب التطبيق مقدار القراءة."
     }
 }
 
@@ -511,9 +534,15 @@ private struct QuranPlanSafeguardsCard: View {
 private struct QuranQiyamCard: View {
     let insight: QuranQiyamDailyInsight
     let isEnabled: Bool
-    @Binding var inputMode: QuranQiyamInputMode
-    @Binding var ayatInput: Int
-    @Binding var pageInput: Int
+    let startLocked: Bool
+    let startSummary: String?
+    let savedRangeSummary: String?
+    @Binding var startSurahIndex: Int
+    @Binding var startAyah: Int
+    @Binding var stopSurahIndex: Int
+    @Binding var stopAyah: Int
+    let computedAyahCount: Int?
+    let validationMessage: String?
     let saveAction: () -> Void
     let clearAction: () -> Bool
     let openSettingsAction: () -> Void
@@ -551,29 +580,52 @@ private struct QuranQiyamCard: View {
                     tint: qiyamBannerTint
                 )
 
-                Picker("نوع الإدخال", selection: $inputMode) {
-                    ForEach(QuranQiyamInputMode.allCases) { mode in
-                        Text(mode.title).tag(mode)
+                if startLocked {
+                    if let startSummary {
+                        QuranModeBanner(
+                            title: "الحساب يبدأ من آخر موضع محفوظ",
+                            subtitle: startSummary,
+                            tint: AamalTheme.emerald
+                        )
                     }
-                }
-                .pickerStyle(.segmented)
-
-                if inputMode == .ayahs {
-                    QuranNumericControlRow(title: "قرأت تقريبًا", value: $ayatInput, range: 0...2000, suffix: "آية")
                 } else {
-                    QuranNumericControlRow(title: "قرأت تقريبًا", value: $pageInput, range: 0...100, suffix: "صفحة")
+                    QuranAyahSelector(
+                        title: "ابدأ المتابعة من",
+                        surahIndex: $startSurahIndex,
+                        ayah: $startAyah,
+                        accent: AamalTheme.emerald
+                    )
+                }
+
+                QuranAyahSelector(
+                    title: "توقفت عند",
+                    surahIndex: $stopSurahIndex,
+                    ayah: $stopAyah,
+                    accent: qiyamBannerTint
+                )
+
+                if let computedAyahCount {
+                    QuranModeBanner(
+                        title: "سيُحتسب لك تلقائيًا",
+                        subtitle: "من نقطة البداية إلى موضع التوقف الحالي = \(computedAyahCount) آية.",
+                        tint: AamalTheme.gold
+                    )
+                } else if let validationMessage {
+                    Text(validationMessage)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                if let savedRangeSummary {
+                    Text("المدى المحفوظ اليوم: \(savedRangeSummary)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
                 }
 
                 HStack(spacing: 10) {
                     QuranMetricPill(title: "سلسلة القيام", value: "\(insight.streak) يوم", accent: AamalTheme.emerald)
                     QuranMetricPill(title: "قراءة الليلة", value: insight.ayatCount == 0 ? "غير محفوظ" : "\(insight.ayatCount) آية", accent: qiyamBannerTint)
                     QuranMetricPill(title: "تخفيف اليوم", value: insight.reducedAyahs == 0 ? "0" : "\(insight.reducedAyahs) آية", accent: AamalTheme.gold)
-                }
-
-                if inputMode == .pages {
-                    Text("\(pageInput) صفحات ≈ \(pageInput * QiyamSession.estimatedAyahsPerPage) آية")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
                 }
 
                 if insight.reductionPercentage > 0 {
@@ -644,6 +696,69 @@ private struct QuranQiyamCard: View {
             return qiyamTint(for: rank)
         }
         return insight.ayatCount > 0 ? AamalTheme.gold : AamalTheme.emerald
+    }
+}
+
+private struct QuranAyahSelector: View {
+    let title: String
+    @Binding var surahIndex: Int
+    @Binding var ayah: Int
+    let accent: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.subheadline)
+                .fontWeight(.semibold)
+
+            Menu {
+                ForEach(QuranAyahCatalog.surahs) { surah in
+                    Button("سورة \(surah.name)") {
+                        surahIndex = surah.index
+                        ayah = min(ayah, surah.ayahCount)
+                    }
+                }
+            } label: {
+                HStack {
+                    Text("السورة")
+                    Spacer()
+                    Text(selectedSurahTitle)
+                        .foregroundColor(AamalTheme.ink)
+                    Image(systemName: "chevron.down")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+                .background(accent.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(accent.opacity(0.14), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+
+            Stepper(value: ayahBinding, in: 1...selectedSurahAyahCount) {
+                Text("الآية الحالية: \(ayah)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    private var selectedSurahTitle: String {
+        QuranAyahCatalog.surah(at: surahIndex)?.name ?? "غير محددة"
+    }
+
+    private var selectedSurahAyahCount: Int {
+        QuranAyahCatalog.surah(at: surahIndex)?.ayahCount ?? 1
+    }
+
+    private var ayahBinding: Binding<Int> {
+        Binding(
+            get: { min(max(ayah, 1), selectedSurahAyahCount) },
+            set: { ayah = min(max($0, 1), selectedSurahAyahCount) }
+        )
     }
 }
 
