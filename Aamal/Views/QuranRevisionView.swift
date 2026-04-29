@@ -103,12 +103,11 @@ struct QuranRevisionView: View {
 
                     QuranRequiredRevisionCard(plan: todaysPlan)
 
-                    if !store.quranMarkedWeakRubs.isEmpty {
-                        QuranMarkedWeakCard(
-                            rubs: store.quranMarkedWeakRubs,
-                            clearWeakAction: clearWeakRub
-                        )
-                    }
+                    QuranWeakSpotsDashboardCard(
+                        plan: todaysPlan,
+                        weakRubs: store.quranMarkedWeakRubs,
+                        clearWeakAction: clearWeakRub
+                    )
 
                     if !todaysPlan.safeguards.isEmpty {
                         QuranPlanSafeguardsCard(plan: todaysPlan)
@@ -646,6 +645,184 @@ private struct QuranQiyamCard: View {
         }
         return insight.ayatCount > 0 ? AamalTheme.gold : AamalTheme.emerald
     }
+}
+
+private struct QuranWeakSpotsDashboardCard: View {
+    let plan: QuranAdaptiveDailyPlan
+    let weakRubs: [QuranRubReference]
+    let clearWeakAction: (QuranRubReference) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            QuranSectionHeader(
+                title: "لوحة الضعف",
+                subtitle: dashboardSubtitle,
+                tint: AamalTheme.gold,
+                systemImage: "waveform.path.ecg"
+            )
+
+            HStack(spacing: 10) {
+                QuranMetricPill(title: "المواضع المعلّمة", value: "\(weakRubs.count)", accent: AamalTheme.gold)
+                QuranMetricPill(title: "استرجاع اليوم", value: recoveryAyahSummary, accent: AamalTheme.emerald)
+                QuranMetricPill(title: "صلوات متأثرة", value: "\(prayersWithWeakFocus.count)", accent: AamalTheme.ink.opacity(0.82))
+            }
+
+            if !prayersWithWeakFocus.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("أين يظهر الضعف اليوم؟")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+
+                    ForEach(prayersWithWeakFocus) { highlight in
+                        HStack(alignment: .top, spacing: 12) {
+                            Image(systemName: highlight.prayer.systemImage)
+                                .foregroundColor(AamalTheme.gold)
+                                .frame(width: 20)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(highlight.prayer.arabicName)
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                Text(highlight.summary)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+
+                            Spacer()
+
+                            Text("\(highlight.estimatedAyahs) آية")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(12)
+                        .background(AamalTheme.gold.opacity(0.07))
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                }
+            }
+
+            if priorityWeakRubs.isEmpty {
+                Text("لا توجد مواضع موسومة يدويًا الآن. إذا تكرر التعثر في موضع ما فوسمه من بطاقة توزيع الصلوات ليظهر هنا مباشرة.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AamalTheme.emerald.opacity(0.08))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("أولوية المتابعة")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+
+                    ForEach(priorityWeakRubs) { rub in
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(rub.detailedTitle)
+                                    .font(.subheadline)
+                                    .fontWeight(.semibold)
+                                Text(rub.spanSummary.isEmpty ? rub.pageSpanText : rub.spanSummary)
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Text(priorityLabel(for: rub))
+                                    .font(.caption2)
+                                    .foregroundColor(AamalTheme.gold)
+                            }
+
+                            Spacer()
+
+                            Button(action: { clearWeakAction(rub) }) {
+                                Text("إزالة الوسم")
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .tint(AamalTheme.emerald)
+                        }
+                        .padding(12)
+                        .background(Color(.secondarySystemBackground))
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                }
+            }
+        }
+        .aamalCard()
+    }
+
+    private var recoveryAyahSummary: String {
+        guard let recoveryItem = plan.requiredRevision.first(where: { $0.kind == .recovery }) else {
+            return "0"
+        }
+
+        return "\(recoveryItem.estimatedAyahs) آية"
+    }
+
+    private var dashboardSubtitle: String {
+        if weakRubs.isEmpty, prayersWithWeakFocus.isEmpty {
+            return "لا توجد بؤر ضعف صريحة اليوم، لكن وسم أي موضع متعثر سيُظهره هنا فورًا."
+        }
+
+        if let recoveryItem = plan.requiredRevision.first(where: { $0.kind == .recovery }) {
+            return "هذه اللوحة تختصر مواضع الاسترجاع والوسوم اليدوية حتى ترى أين يحتاج المحفوظ إلى عناية مباشرة اليوم. بند الاسترجاع الحالي حوالي \(recoveryItem.estimatedAyahs) آية."
+        }
+
+        return "هذه اللوحة تجمع المواضع المعلّمة ضعيفة وتُظهر أين تدخل داخل خطة اليوم."
+    }
+
+    private var prayersWithWeakFocus: [QuranWeakPrayerHighlight] {
+        plan.prayerAssignments.compactMap { assignment in
+            let segments = assignment.segments.filter { segment in
+                segment.kind == .recovery || weakRubs.contains(where: { $0.globalRubIndex == segment.rub.globalRubIndex })
+            }
+
+            guard !segments.isEmpty else { return nil }
+
+            let rubTitles = Array(Set(segments.map { $0.rub.shortTitle })).sorted()
+            let summary = rubTitles.prefix(2).joined(separator: "، ")
+            return QuranWeakPrayerHighlight(
+                prayer: assignment.prayer,
+                summary: segments.contains(where: { $0.kind == .recovery })
+                    ? "يبدأ هنا مسار الاسترجاع مع \(summary.isEmpty ? "مقاطع ضعيفة" : summary)."
+                    : "تحتاج هذه الصلاة تركيزًا خاصًا على \(summary).",
+                estimatedAyahs: segments.reduce(0) { $0 + $1.estimatedAyahs }
+            )
+        }
+    }
+
+    private var priorityWeakRubs: [QuranRubReference] {
+        var seen: Set<Int> = []
+        let scheduledWeak = plan.prayerAssignments
+            .flatMap(\.segments)
+            .filter { segment in
+                segment.kind == .recovery || weakRubs.contains(where: { $0.globalRubIndex == segment.rub.globalRubIndex })
+            }
+            .map(\.rub)
+
+        return (scheduledWeak + weakRubs).compactMap { rub in
+            guard !seen.contains(rub.globalRubIndex) else { return nil }
+            seen.insert(rub.globalRubIndex)
+            return rub
+        }
+        .prefix(4)
+        .map { $0 }
+    }
+
+    private func priorityLabel(for rub: QuranRubReference) -> String {
+        if let prayer = plan.prayerAssignments.first(where: { assignment in
+            assignment.segments.contains(where: { $0.rub.globalRubIndex == rub.globalRubIndex })
+        })?.prayer {
+            return "مجدول اليوم في \(prayer.arabicName)."
+        }
+
+        return "معلَّم يدويًا وسيعود إلى الاسترجاع حتى إزالة الوسم."
+    }
+}
+
+private struct QuranWeakPrayerHighlight: Identifiable {
+    let prayer: PrayerCompensationType
+    let summary: String
+    let estimatedAyahs: Int
+
+    var id: PrayerCompensationType { prayer }
 }
 
 private struct QuranMarkedWeakCard: View {
