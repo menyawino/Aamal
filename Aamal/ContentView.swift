@@ -37,6 +37,7 @@ struct ContentView: View {
                     Label("المراجعة", systemImage: "book.closed.fill")
                 }
         }
+        .tint(AamalTheme.emerald)
         .environment(\.layoutDirection, .rightToLeft)
         .environment(\.locale, Locale(identifier: "ar"))
     }

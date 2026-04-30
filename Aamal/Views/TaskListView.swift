@@ -9,7 +9,7 @@ struct TaskListView: View {
     }
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             List {
                 ForEach($tasks) { $task in
                     HStack {
@@ -21,7 +21,7 @@ struct TaskListView: View {
                             if let badge = task.badge {
                                 Text("وسام: \(badge)")
                                     .font(.subheadline)
-                                    .foregroundColor(.blue)
+                                    .foregroundColor(AamalTheme.gold)
                             }
                         }
                         Spacer()
@@ -34,11 +34,13 @@ struct TaskListView: View {
                             }
                         }) {
                             Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
-                                .foregroundColor(task.isCompleted ? .green : .gray)
+                                .foregroundColor(task.isCompleted ? AamalTheme.emerald : .secondary)
                         }
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(AamalTheme.backgroundGradient.ignoresSafeArea())
             .navigationTitle("المهام")
         }
     }
@@ -67,7 +69,7 @@ struct TaskTableView: View {
     @State private var currentTime = ""
 
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack {
                 Text("مهام الأسبوع")
                     .font(.title)
@@ -86,6 +88,7 @@ struct TaskTableView: View {
                 }
             }
             .navigationTitle("مهام الأسبوع")
+            .background(AamalTheme.backgroundGradient.ignoresSafeArea())
             .onAppear {
                 currentDate = Date()
                 currentTime = fetchCurrentTime()

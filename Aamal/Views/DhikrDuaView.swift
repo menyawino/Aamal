@@ -17,8 +17,8 @@ struct DhikrDuaView: View {
                 .padding(.horizontal)
                 .padding(.bottom, 24)
             }
-            .background(AamalTheme.backgroundGradient.ignoresSafeArea())
             .navigationTitle("الأذكار والأدعية")
+            .aamalScreen()
         }
     }
 }
@@ -36,7 +36,7 @@ private struct DailyDuaCard: View {
                     store.pickNextDailyDua()
                 }
                 .font(.caption)
-                .buttonStyle(.bordered)
+                .buttonStyle(AamalSecondaryButtonStyle())
             }
 
             if let dua = store.todayDua {

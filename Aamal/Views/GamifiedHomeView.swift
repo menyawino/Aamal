@@ -23,31 +23,37 @@ struct GamifiedHomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
+                VStack(spacing: AamalTheme.screenSpacing) {
                     HeroProgressCard(store: store)
+                        .aamalEntrance(0)
                     HomeTodayStatusCard(
                         completedCount: completedTodayCount,
                         pendingCount: pendingTodayCount,
                         nextPrayerName: nextPrayerSlot?.arabicName
                     )
+                    .aamalEntrance(1)
                     HomeQuickActionsCard(
                         refreshAction: { refreshPrayerTimes(force: true) }
                     )
+                    .aamalEntrance(2)
                     TimeBoundTasksCard(store: store, nextPrayer: nextPrayerSlot)
+                        .aamalEntrance(3)
                     QuickLogSection(store: store, onlyNonPrayer: true, allowedPrayer: nextPrayerSlot?.arabicName)
+                        .aamalEntrance(4)
 
-                    ForEach(store.categories, id: \.name) { category in
+                    ForEach(Array(store.categories.enumerated()), id: \.element.name) { index, category in
                         if category.name == "مهام الجمعة" && !isFriday() {
                             EmptyView()
                         } else if category.name == "اليومي" {
                             EmptyView()
                         } else {
                             TaskCategoryCard(category: category, store: store)
+                                .aamalEntrance(index + 5)
                         }
                     }
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 24)
+                .padding(.horizontal, AamalTheme.sectionSpacing)
+                .padding(.bottom, AamalTheme.screenBottomInset)
             }
             .refreshable {
                 refreshPrayerTimes(force: true)
@@ -60,8 +66,9 @@ struct GamifiedHomeView: View {
                     .accessibilityLabel("تحديث")
                 }
             }
-            .background(AamalTheme.backgroundGradient.ignoresSafeArea())
             .navigationTitle("أعمال")
+            .navigationBarTitleDisplayMode(.inline)
+            .aamalScreen()
         }
         .onAppear {
             locationManager.requestLocation()
@@ -119,24 +126,29 @@ private struct HomeTodayStatusCard: View {
     let nextPrayerName: String?
 
     var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("ملخص سريع")
-                    .font(.headline)
-                Text("المتبقي اليوم: \(pendingCount)")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-            Spacer()
-            VStack(alignment: .trailing, spacing: 4) {
-                Text("المكتمل: \(completedCount)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                if let nextPrayerName {
-                    Text("الصلاة القادمة: \(nextPrayerName)")
-                        .font(.caption)
-                        .foregroundColor(AamalTheme.emerald)
-                }
+        VStack(alignment: .leading, spacing: AamalTheme.contentSpacing) {
+            AamalSectionHeader(
+                title: "ملخص سريع",
+                subtitle: nextPrayerName.map { "الصلاة القادمة: \($0)" } ?? "نظرة مركزة على اليوم قبل الدخول للتفاصيل.",
+                tint: AamalTheme.gold,
+                systemImage: "chart.bar.doc.horizontal"
+            )
+
+            HStack(spacing: 10) {
+                AamalStatPill(
+                    title: "المتبقي اليوم",
+                    value: "\(pendingCount)",
+                    tint: AamalTheme.gold,
+                    layout: .compact,
+                    showsIndicator: true
+                )
+                AamalStatPill(
+                    title: "المكتمل",
+                    value: "\(completedCount)",
+                    tint: AamalTheme.emerald,
+                    layout: .compact,
+                    showsIndicator: true
+                )
             }
         }
         .aamalCard()
@@ -147,17 +159,19 @@ private struct HomeQuickActionsCard: View {
     let refreshAction: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("التسجيل من الصفحة الرئيسية يتم مهمة بمهمة")
-                .font(.caption)
-                .foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: AamalTheme.contentSpacing) {
+            AamalSectionHeader(
+                title: "إجراءات سريعة",
+                subtitle: "التسجيل من الصفحة الرئيسية يتم مهمة بمهمة.",
+                tint: AamalTheme.emerald,
+                systemImage: "bolt.circle"
+            )
 
             Button(action: refreshAction) {
                 Label("تحديث الأوقات", systemImage: "clock.arrow.trianglehead.counterclockwise.rotate.90")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
-            .tint(AamalTheme.gold)
+            .buttonStyle(AamalSecondaryButtonStyle())
         }
         .controlSize(.small)
         .aamalCard()
@@ -170,25 +184,17 @@ private struct HeroProgressCard: View {
     @ObservedObject var store: TaskStore
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("رحلة اليوم")
-                        .font(.headline)
-                        .foregroundColor(AamalTheme.ink)
-                    Text("المستوى \(store.level) • \(store.totalXP) نقطة")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text("سلسلة الإنجاز")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("\(store.streak) أيام")
-                        .font(.headline)
-                        .foregroundColor(AamalTheme.emerald)
-                }
+        VStack(alignment: .leading, spacing: AamalTheme.sectionSpacing) {
+            AamalSectionHeader(
+                title: "رحلة اليوم",
+                subtitle: "المستوى \(store.level) • \(store.totalXP) نقطة",
+                tint: AamalTheme.emerald,
+                systemImage: "sparkles"
+            )
+
+            HStack(spacing: 10) {
+                AamalStatPill(title: "سلسلة الإنجاز", value: "\(store.streak) أيام", tint: AamalTheme.emerald)
+                AamalStatPill(title: "إلى المستوى التالي", value: "\(store.xpToNextLevel) نقطة", tint: AamalTheme.gold)
             }
 
             ProgressView(value: store.overallProgress) {
@@ -208,7 +214,7 @@ private struct HeroProgressCard: View {
                     .tint(AamalTheme.gold)
             }
         }
-        .aamalCard()
+        .aamalCardSolid()
     }
 }
 
@@ -222,14 +228,13 @@ private struct QuickLogSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("تسجيل سريع")
-                    .font(.headline)
-                Text("أنجز بسرعة أهم المهام المتبقية اليوم")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
+        VStack(alignment: .leading, spacing: AamalTheme.sectionSpacing) {
+            AamalSectionHeader(
+                title: "تسجيل سريع",
+                subtitle: "أنجز بسرعة أهم المهام المتبقية اليوم.",
+                tint: AamalTheme.gold,
+                systemImage: "checklist"
+            )
 
             let tasks = filteredTasks(limit: 3)
             if tasks.isEmpty {
@@ -282,20 +287,25 @@ private struct QuickLogRow: View {
             }
             Spacer()
             Button(action: {
-                _ = store.logTask(taskId: task.id, on: Date())
+                withAnimation(AamalMotion.cardState) {
+                    _ = store.logTask(taskId: task.id, on: Date())
+                }
             }) {
                 Text("سجل")
                     .font(.subheadline)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(AamalTheme.emerald)
+            .buttonStyle(AamalChipButtonStyle(prominent: true))
         }
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(AamalTheme.cardBackground())
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(AamalTheme.gold.opacity(0.1), lineWidth: 1)
+                )
         )
     }
 }
@@ -309,15 +319,13 @@ private struct TaskCategoryCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text(category.name)
-                    .font(.headline)
-                Spacer()
-                Text("\(Int(store.completion(for: category) * 100))%")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
+        VStack(alignment: .leading, spacing: AamalTheme.sectionSpacing) {
+            AamalSectionHeader(
+                title: category.name,
+                subtitle: "\(Int(store.completion(for: category) * 100))٪ مكتمل حتى الآن",
+                tint: AamalTheme.emerald,
+                systemImage: "square.grid.2x2"
+            )
 
             ProgressView(value: store.completion(for: category))
                 .tint(AamalTheme.emerald)
@@ -375,9 +383,13 @@ private struct TimeBoundTasksCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("المهام المرتبطة بالصلاة القادمة")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: AamalTheme.sectionSpacing) {
+            AamalSectionHeader(
+                title: "المهام المرتبطة بالصلاة القادمة",
+                subtitle: nextPrayer == nil ? "لا توجد صلاة قادمة محفوظة الآن." : "أقرب مجموعة تحتاج متابعة سريعة قبل دخول الوقت.",
+                tint: AamalTheme.gold,
+                systemImage: "clock.badge"
+            )
 
             if let nextPrayer {
                 HStack {
@@ -409,7 +421,7 @@ private struct PrayerTaskSummaryList: View {
     private let prayerNames = ["الصبح", "الظهر", "العصر", "المغرب", "العشاء"]
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: AamalTheme.contentSpacing) {
             ForEach(prayerNames, id: \.self) { prayer in
                 PrayerTaskGroupCard(prayerName: prayer, tasks: store.tasks(forPrayerName: prayer), store: store)
             }
@@ -442,7 +454,7 @@ private struct PrayerTaskGroupCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: AamalTheme.contentSpacing) {
             HStack {
                 Text(prayerName)
                     .font(.subheadline)
@@ -467,19 +479,23 @@ private struct PrayerTaskGroupCard: View {
                             .font(.caption)
                         Spacer()
                         Button("سجل") {
-                            _ = store.logTask(taskId: task.id, on: Date())
+                            withAnimation(AamalMotion.cardState) {
+                                _ = store.logTask(taskId: task.id, on: Date())
+                            }
                         }
-                        .buttonStyle(.borderedProminent)
-                        .tint(AamalTheme.emerald)
+                        .buttonStyle(AamalChipButtonStyle(prominent: true))
                         .controlSize(.small)
                     }
+                    .transition(AamalTransition.cardState)
                 }
 
                 if pendingTasks.count > 2 {
                     Button(showAllPending ? "إخفاء بعض المهام" : "عرض كل المهام المتبقية") {
-                        showAllPending.toggle()
+                        withAnimation(AamalMotion.cardState) {
+                            showAllPending.toggle()
+                        }
                     }
-                    .buttonStyle(.bordered)
+                    .buttonStyle(AamalSecondaryButtonStyle())
                     .controlSize(.small)
 
                     if !showAllPending {
@@ -500,7 +516,13 @@ private struct PrayerTaskGroupCard: View {
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(AamalTheme.cardBackground())
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(AamalTheme.gold.opacity(0.1), lineWidth: 1)
+                )
         )
+        .animation(AamalMotion.cardState, value: showAllPending)
+        .animation(AamalMotion.cardState, value: visibleTasks.map(\.id))
     }
 }
 
@@ -520,7 +542,7 @@ private struct CompactTaskList: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: AamalTheme.contentSpacing) {
             HStack {
                 Text(title)
                     .font(.subheadline)
@@ -545,11 +567,14 @@ private struct CompactTaskList: View {
                             .font(.caption)
                         Spacer()
                         Button("سجل") {
-                            _ = store.logTask(taskId: task.id, on: Date())
+                            withAnimation(AamalMotion.cardState) {
+                                _ = store.logTask(taskId: task.id, on: Date())
+                            }
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(AamalChipButtonStyle())
                         .controlSize(.small)
                     }
+                    .transition(AamalTransition.cardState)
                 }
 
                 let remaining = tasks.filter { !store.isTaskCompleted($0, on: Date()) }.count - upcomingTasks.count
@@ -564,7 +589,12 @@ private struct CompactTaskList: View {
         .background(
             RoundedRectangle(cornerRadius: 12)
                 .fill(AamalTheme.cardBackground())
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(AamalTheme.gold.opacity(0.1), lineWidth: 1)
+                )
         )
+        .animation(AamalMotion.cardState, value: upcomingTasks.map(\.id))
     }
 }
 
@@ -600,25 +630,28 @@ private struct TaskRow: View {
                     )
 
                 Button(action: {
-                    _ = store.unlogTask(taskId: task.id, on: Date())
+                    withAnimation(AamalMotion.cardState) {
+                        _ = store.unlogTask(taskId: task.id, on: Date())
+                    }
                 }) {
                     Text("إلغاء التسجيل")
                         .font(.subheadline)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(AamalChipButtonStyle(tint: AamalTheme.gold))
             } else {
                 Button(action: {
-                    _ = store.logTask(taskId: task.id, on: Date())
+                    withAnimation(AamalMotion.cardState) {
+                        _ = store.logTask(taskId: task.id, on: Date())
+                    }
                 }) {
                     Text("سجل")
                         .font(.subheadline)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(BorderedProminentButtonStyle())
-                .tint(AamalTheme.emerald)
+                .buttonStyle(AamalChipButtonStyle(prominent: true))
             }
 
         }

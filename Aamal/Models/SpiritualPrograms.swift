@@ -109,6 +109,13 @@ public struct QuranSurahInfo: Identifiable, Hashable {
 
 public enum QuranAyahCatalog {
     static let surahs: [QuranSurahInfo] = quranSurahCatalog
+    static let totalMushafPages = 604
+
+    static var totalAyahCount: Int {
+        surahs.reduce(0) { partial, surah in
+            partial + surah.ayahCount
+        }
+    }
 
     static func surah(at index: Int) -> QuranSurahInfo? {
         guard (1...surahs.count).contains(index) else { return nil }
@@ -143,6 +150,13 @@ public enum QuranAyahCatalog {
         }
 
         return endIndex - startIndex
+    }
+
+    static func estimatedPage(for reference: QuranAyahReference) -> Int? {
+        guard let globalIndex = globalAyahIndex(for: reference) else { return nil }
+        let position = Double(globalIndex) / Double(max(1, totalAyahCount))
+        let rawPage = Int(ceil(position * Double(totalMushafPages)))
+        return min(max(1, rawPage), totalMushafPages)
     }
 }
 
@@ -240,6 +254,107 @@ struct QuranQiyamDailyInsight: Hashable {
 
     var rangeSummary: String? {
         session?.rangeSummary
+    }
+}
+
+enum QuranStrengthTier: CaseIterable, Hashable {
+    case fragile
+    case building
+    case anchored
+    case unmemorized
+
+    var title: String {
+        switch self {
+        case .fragile:
+            return "هش"
+        case .building:
+            return "قيد التثبيت"
+        case .anchored:
+            return "راسخ"
+        case .unmemorized:
+            return "غير داخل في المحفوظ"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .fragile:
+            return "الاحتمال الأضعف للاستدعاء الآن ويحتاج تدخلًا سريعًا."
+        case .building:
+            return "يتحسن، لكن ثباته الزمني ما زال قصيرًا."
+        case .anchored:
+            return "استدعاؤه وثباته مرتفعان مقارنة ببقية النطاق."
+        case .unmemorized:
+            return "لم يدخل هذا الربع بعد ضمن مقدار المحفوظ الحالي."
+        }
+    }
+}
+
+enum QuranStrengthWeaknessReason: String, Hashable {
+    case manualWeak
+    case dueToday
+    case overdue
+    case lowStability
+    case recovering
+    case unmemorized
+    case steady
+
+    var title: String {
+        switch self {
+        case .manualWeak:
+            return "موسوم يدويًا"
+        case .dueToday:
+            return "بلغ حد المراجعة اليوم"
+        case .overdue:
+            return "تراجع بسبب طول الانقطاع"
+        case .lowStability:
+            return "ما يزال جديدًا على الذاكرة"
+        case .recovering:
+            return "دخل طور الاسترجاع"
+        case .unmemorized:
+            return "خارج المحفوظ"
+        case .steady:
+            return "مستقر الآن"
+        }
+    }
+}
+
+struct QuranRubStrengthSample: Identifiable, Hashable {
+    let rub: QuranRubReference
+    let score: Double
+    let retrievability: Double
+    let stabilityDays: Double
+    let reviewCount: Int
+    let lastReviewDate: Date?
+    let tier: QuranStrengthTier
+    let weaknessReason: QuranStrengthWeaknessReason
+    let weaknessDetail: String
+    let isDueToday: Bool
+    let isInRecoveryToday: Bool
+    let isManuallyWeak: Bool
+
+    var id: Int { rub.globalRubIndex }
+}
+
+struct QuranStrengthDistributionSnapshot: Hashable {
+    let referenceDate: Date
+    let samples: [QuranRubStrengthSample]
+
+    func count(for tier: QuranStrengthTier) -> Int {
+        samples.filter { $0.tier == tier }.count
+    }
+
+    func sample(for rubIndex: Int) -> QuranRubStrengthSample? {
+        samples.first { $0.rub.globalRubIndex == rubIndex }
+    }
+}
+
+struct QuranStrengthDistributionComparison: Hashable {
+    let today: QuranStrengthDistributionSnapshot
+    let lastWeek: QuranStrengthDistributionSnapshot
+
+    func delta(for tier: QuranStrengthTier) -> Int {
+        today.count(for: tier) - lastWeek.count(for: tier)
     }
 }
 
@@ -661,6 +776,10 @@ struct QuranRubMetadata: Hashable {
     let endPage: Int
     let startSurah: String
     let endSurah: String
+
+    var pageCount: Int {
+        max(1, endPage - startPage + 1)
+    }
 
     var surahSpanText: String {
         if startSurah == endSurah {

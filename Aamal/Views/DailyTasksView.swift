@@ -134,34 +134,35 @@ struct DailyTasksView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("تسجيل أيام سابقة")
-                            .font(.headline)
+                VStack(spacing: AamalTheme.screenSpacing) {
+                    VStack(alignment: .leading, spacing: AamalTheme.contentSpacing) {
+                        AamalSectionHeader(
+                            title: "تسجيل أيام سابقة",
+                            subtitle: "يمكنك تسجيل إنجازات أي يوم سابق هنا.",
+                            tint: AamalTheme.gold,
+                            systemImage: "calendar.badge.clock"
+                        )
+
                         DatePicker("اختر التاريخ", selection: $selectedDate, in: ...Date(), displayedComponents: .date)
                             .datePickerStyle(.compact)
-                        Text("يمكنك تسجيل إنجازات أي يوم سابق هنا")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
 
                         if !isSelectedDateToday {
                             Button("العودة لليوم") {
                                 selectedDate = Date()
                             }
-                            .buttonStyle(.bordered)
+                            .buttonStyle(AamalSecondaryButtonStyle())
                         }
                     }
                     .aamalCard()
+                    .aamalEntrance(0)
 
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack {
-                            Text("ملخص اليوم المختار")
-                                .font(.headline)
-                            Spacer()
-                            Text("\(selectedDateCompletedTasks)/\(selectedDateTotalTasks)")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
+                    VStack(alignment: .leading, spacing: AamalTheme.sectionSpacing) {
+                        AamalSectionHeader(
+                            title: "ملخص اليوم المختار",
+                            subtitle: "\(selectedDateCompletedTasks)/\(selectedDateTotalTasks) مهمة مسجلة حتى الآن",
+                            tint: AamalTheme.emerald,
+                            systemImage: "list.clipboard"
+                        )
 
                         ProgressView(value: selectedDateCompletion)
                             .tint(AamalTheme.emerald)
@@ -171,20 +172,25 @@ struct DailyTasksView: View {
                             .foregroundColor(.secondary)
 
                         HStack(spacing: 10) {
-                            SummaryPill(
+                            AamalStatPill(
                                 title: "المتبقي",
                                 value: "\(max(0, selectedDateTotalTasks - selectedDateCompletedTasks))",
-                                tint: AamalTheme.gold
+                                tint: AamalTheme.gold,
+                                layout: .compact,
+                                showsIndicator: true
                             )
 
-                            SummaryPill(
+                            AamalStatPill(
                                 title: "المسجل",
                                 value: "\(selectedDateCompletedTasks)",
-                                tint: AamalTheme.emerald
+                                tint: AamalTheme.emerald,
+                                layout: .compact,
+                                showsIndicator: true
                             )
                         }
                     }
                     .aamalCard()
+                    .aamalEntrance(1)
 
                     if filteredCategories.isEmpty {
                         Text("لا توجد مهام مطابقة لبحثك")
@@ -193,19 +199,21 @@ struct DailyTasksView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.vertical, 24)
                             .aamalCard()
+                            .aamalEntrance(2)
                     } else {
-                        ForEach(filteredCategories, id: \.name) { category in
+                        ForEach(Array(filteredCategories.enumerated()), id: \.element.name) { index, category in
                             CategorySectionView(
                                 category: category,
                                 store: store,
                                 date: selectedDate,
                                 onTaskAction: presentFeedback
                             )
+                            .aamalEntrance(index + 2)
                         }
                     }
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 24)
+                .padding(.horizontal, AamalTheme.sectionSpacing)
+                .padding(.bottom, AamalTheme.screenBottomInset)
             }
             .safeAreaInset(edge: .bottom) {
                 if let actionFeedback {
@@ -216,7 +224,7 @@ struct DailyTasksView: View {
                     )
                     .padding(.horizontal)
                     .padding(.top, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(AamalTransition.banner)
                 }
             }
             .toolbar {
@@ -226,9 +234,11 @@ struct DailyTasksView: View {
                     }
                 }
             }
-            .background(AamalTheme.backgroundGradient.ignoresSafeArea())
             .navigationTitle("أعمال اليوم")
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "ابحث عن مهمة")
+            .aamalScreen()
+            .animation(AamalMotion.banner, value: actionFeedback != nil)
             .sheet(isPresented: $showAddTaskSheet) {
                 NavigationStack {
                     Form {
@@ -285,6 +295,7 @@ struct DailyTasksView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+                    .aamalForm()
                     .navigationTitle("إضافة مهمة")
                     .navigationBarTitleDisplayMode(.inline)
                     .toolbar {
@@ -378,12 +389,12 @@ struct DailyTasksView: View {
 
     private func presentFeedback(_ feedback: TaskActionFeedback) {
         feedbackDismissWorkItem?.cancel()
-        withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
+        withAnimation(AamalMotion.banner) {
             actionFeedback = feedback
         }
 
         let workItem = DispatchWorkItem {
-            withAnimation(.easeInOut(duration: 0.2)) {
+            withAnimation(AamalMotion.banner) {
                 actionFeedback = nil
             }
         }
@@ -393,14 +404,14 @@ struct DailyTasksView: View {
 
     private func dismissFeedback() {
         feedbackDismissWorkItem?.cancel()
-        withAnimation(.easeInOut(duration: 0.2)) {
+        withAnimation(AamalMotion.banner) {
             actionFeedback = nil
         }
     }
 
     private func undo(feedback: TaskActionFeedback) {
         feedbackDismissWorkItem?.cancel()
-        withAnimation(.easeInOut(duration: 0.18)) {
+        withAnimation(AamalMotion.cardState) {
             switch feedback.kind {
             case .logged:
                 _ = store.unlogTask(taskId: feedback.task.id, on: feedback.date)
@@ -427,9 +438,15 @@ private struct CategorySectionView: View {
 
         let visibleDirectTasks = category.tasks?.filter { store.isTaskActive($0, on: date) }
 
-        VStack(alignment: .leading, spacing: 12) {
-            Text(category.name)
-                .font(.headline)
+        let visibleCount = (visibleSubCategories?.reduce(0) { $0 + $1.tasks.count } ?? 0) + (visibleDirectTasks?.count ?? 0)
+
+        VStack(alignment: .leading, spacing: AamalTheme.sectionSpacing) {
+            AamalSectionHeader(
+                title: category.name,
+                subtitle: visibleCount == 0 ? "لا توجد مهام فعالة لهذا اليوم." : "\(visibleCount) مهمة فعالة ضمن هذا القسم.",
+                tint: AamalTheme.emerald,
+                systemImage: "checklist.checked"
+            )
 
             if let subCategories = visibleSubCategories {
                 ForEach(subCategories, id: \.name) { subCategory in
@@ -485,7 +502,7 @@ private struct TaskGroupSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: AamalTheme.contentSpacing) {
             if let title {
                 HStack {
                     Text(title)
@@ -514,10 +531,7 @@ private struct TaskGroupSection: View {
             } else {
                 ForEach(activeTasks) { task in
                     TaskRow(task: task, store: store, date: date, onTaskAction: onTaskAction)
-                        .transition(.asymmetric(
-                            insertion: .scale(scale: 0.96).combined(with: .opacity),
-                            removal: .scale(scale: 0.88).combined(with: .opacity)
-                        ))
+                        .transition(AamalTransition.cardState)
                 }
             }
 
@@ -531,8 +545,8 @@ private struct TaskGroupSection: View {
                 )
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: activeTasks.map(\ .id))
-        .animation(.easeInOut(duration: 0.18), value: completedTasks.map(\ .id))
+        .animation(AamalMotion.cardState, value: activeTasks.map(\.id))
+        .animation(AamalMotion.cardState, value: completedTasks.map(\.id))
     }
 }
 
@@ -547,10 +561,13 @@ private struct PrayerCompactGroupList: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("مهام الصلاة")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: AamalTheme.contentSpacing) {
+            AamalSectionHeader(
+                title: "مهام الصلاة",
+                subtitle: "مرتبة حسب وقت الصلاة لليوم المختار.",
+                tint: AamalTheme.gold,
+                systemImage: "moon.stars"
+            )
 
             ForEach(grouped.keys.sorted(), id: \.self) { prayer in
                 PrayerTinyGroupRow(
@@ -592,7 +609,7 @@ private struct PrayerTinyGroupRow: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: AamalTheme.compactSpacing) {
             HStack(spacing: 8) {
                 Text(prayerName)
                     .font(.caption)
@@ -615,16 +632,13 @@ private struct PrayerTinyGroupRow: View {
             } else {
                 ForEach(previewTasks) { task in
                     TaskRow(task: task, store: store, date: date, onTaskAction: onTaskAction)
-                        .transition(.asymmetric(
-                            insertion: .scale(scale: 0.96).combined(with: .opacity),
-                            removal: .scale(scale: 0.88).combined(with: .opacity)
-                        ))
+                        .transition(AamalTransition.cardState)
                 }
             }
 
             if activeTasks.count > previewTasks.count {
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(AamalMotion.cardState) {
                         isExpanded.toggle()
                     }
                 }) {
@@ -639,7 +653,7 @@ private struct PrayerTinyGroupRow: View {
                 .buttonStyle(.plain)
             } else if activeTasks.count > 2 {
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) {
+                    withAnimation(AamalMotion.cardState) {
                         isExpanded.toggle()
                     }
                 }) {
@@ -673,8 +687,8 @@ private struct PrayerTinyGroupRow: View {
                         .stroke(AamalTheme.gold.opacity(0.12), lineWidth: 1)
                 )
         )
-        .animation(.easeInOut(duration: 0.18), value: activeTasks.map(\ .id))
-        .animation(.easeInOut(duration: 0.18), value: completedTasks.map(\ .id))
+        .animation(AamalMotion.cardState, value: activeTasks.map(\.id))
+        .animation(AamalMotion.cardState, value: completedTasks.map(\.id))
     }
 }
 
@@ -686,9 +700,9 @@ private struct CompletedTasksDisclosure: View {
     let onTaskAction: (TaskActionFeedback) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: AamalTheme.compactSpacing) {
             Button(action: {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                withAnimation(AamalMotion.cardState) {
                     isExpanded.toggle()
                 }
             }) {
@@ -706,7 +720,7 @@ private struct CompletedTasksDisclosure: View {
                 VStack(spacing: 6) {
                     ForEach(tasks) { task in
                         CompletedTaskRow(task: task, store: store, date: date, onTaskAction: onTaskAction)
-                            .transition(.move(edge: .top).combined(with: .opacity))
+                            .transition(AamalTransition.cardState)
                     }
                 }
             }
@@ -740,7 +754,7 @@ private struct TaskRow: View {
 
             if isCompleted {
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
+                    withAnimation(AamalMotion.cardState) {
                         if store.unlogTask(taskId: task.id, on: date) {
                             onTaskAction(.init(task: task, date: date, kind: .unlogged))
                         }
@@ -751,7 +765,7 @@ private struct TaskRow: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(BorderedButtonStyle())
+                .buttonStyle(AamalChipButtonStyle())
 
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.18)) {
@@ -765,10 +779,10 @@ private struct TaskRow: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(AamalChipButtonStyle(tint: AamalTheme.gold))
             } else {
                 Button(action: {
-                    withAnimation(.easeInOut(duration: 0.18)) {
+                    withAnimation(AamalMotion.cardState) {
                         if store.logTask(taskId: task.id, on: date) {
                             onTaskAction(.init(task: task, date: date, kind: .logged))
                         }
@@ -779,8 +793,7 @@ private struct TaskRow: View {
                         .padding(.horizontal, 14)
                         .padding(.vertical, 6)
                 }
-                .buttonStyle(BorderedProminentButtonStyle())
-                .tint(AamalTheme.emerald)
+                    .buttonStyle(AamalChipButtonStyle(prominent: true))
             }
 
             Menu {
@@ -848,7 +861,7 @@ private struct CompletedTaskRow: View {
             Spacer()
 
             Button(action: {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                withAnimation(AamalMotion.cardState) {
                     if store.unlogTask(taskId: task.id, on: date) {
                         onTaskAction(.init(task: task, date: date, kind: .unlogged))
                     }
@@ -859,8 +872,7 @@ private struct CompletedTaskRow: View {
                     .padding(.horizontal, 10)
                     .padding(.vertical, 5)
             }
-            .buttonStyle(.bordered)
-            .tint(.secondary)
+            .buttonStyle(AamalChipButtonStyle(tint: AamalTheme.gold))
 
             Menu {
                 Button {
@@ -939,6 +951,7 @@ private struct TaskEditorSheet: View {
                         .foregroundColor(.secondary)
                 }
             }
+            .aamalForm()
             .navigationTitle("تعديل المهمة")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -958,34 +971,6 @@ private struct TaskEditorSheet: View {
                 }
             }
         }
-    }
-}
-
-private struct SummaryPill: View {
-    let title: String
-    let value: String
-    let tint: Color
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(tint)
-                .frame(width: 8, height: 8)
-
-            Text(title)
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            Spacer(minLength: 6)
-
-            Text(value)
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(.primary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(tint.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 
@@ -1012,8 +997,7 @@ private struct TaskActionBanner: View {
             Spacer(minLength: 8)
 
             Button("تراجع", action: undoAction)
-                .buttonStyle(.borderedProminent)
-                .tint(feedback.kind.tint)
+                .buttonStyle(AamalChipButtonStyle(tint: feedback.kind.tint, prominent: true))
                 .controlSize(.small)
 
             Button(action: dismissAction) {

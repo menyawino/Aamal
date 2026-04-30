@@ -65,49 +65,55 @@ struct ScoreView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 20) {
-                ScoreHeroCard(
-                    store: store,
-                    leagueTitle: leagueTitle,
-                    momentumScore: momentumScore
-                )
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: AamalTheme.screenSpacing) {
+                    ScoreHeroCard(
+                        store: store,
+                        leagueTitle: leagueTitle,
+                        momentumScore: momentumScore
+                    )
+                    .aamalEntrance(0)
 
-                ProgressChartCard(data: chartData, range: selectedRange, selectedRange: $selectedRange)
+                    ProgressChartCard(data: chartData, range: selectedRange, selectedRange: $selectedRange)
+                        .aamalEntrance(1)
 
-                QuestMilestonesCard(
-                    store: store,
-                    nextStreakMilestone: nextStreakMilestone,
-                    nextBadgeMilestone: nextBadgeMilestone
-                )
+                    QuestMilestonesCard(
+                        store: store,
+                        nextStreakMilestone: nextStreakMilestone,
+                        nextBadgeMilestone: nextBadgeMilestone
+                    )
+                    .aamalEntrance(2)
 
-                AnalyticsCard(
-                    store: store,
-                    averageValue: averageValue,
-                    bestValue: bestValue,
-                    rangeDays: selectedRange.days
-                )
+                    AnalyticsCard(
+                        store: store,
+                        averageValue: averageValue,
+                        bestValue: bestValue,
+                        rangeDays: selectedRange.days
+                    )
+                    .aamalEntrance(3)
 
-                ScoreComboCard(store: store)
+                    ScoreComboCard(store: store)
+                        .aamalEntrance(4)
 
-                if !store.badges.isEmpty {
-                    BadgeShelfCard(badges: store.badges)
+                    if !store.badges.isEmpty {
+                        BadgeShelfCard(badges: store.badges)
+                            .aamalEntrance(5)
+                    }
+
+                    Button(action: store.refreshContextualNotifications) {
+                        Text("تحديث التذكيرات الذكية")
+                    }
+                    .buttonStyle(AamalPrimaryButtonStyle())
+                    .aamalEntrance(6)
                 }
-
-                Button(action: store.refreshContextualNotifications) {
-                    Text("تحديث التذكيرات الذكية")
-                        .font(.headline)
-                        .padding()
-                        .frame(maxWidth: .infinity)
-                        .background(AamalTheme.emerald)
-                        .foregroundColor(.white)
-                        .cornerRadius(12)
-                }
+                .padding(AamalTheme.sectionSpacing)
+                .padding(.bottom, AamalTheme.screenBottomInset)
             }
-            .padding()
+            .navigationTitle("التقدم")
+            .navigationBarTitleDisplayMode(.inline)
+            .aamalScreen()
         }
-        .background(AamalTheme.backgroundGradient.ignoresSafeArea())
-        .navigationTitle("التقدم")
     }
 }
 
@@ -117,58 +123,33 @@ private struct ScoreHeroCard: View {
     let momentumScore: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(leagueTitle)
-                        .font(.title3.weight(.bold))
-                    Text("المستوى \(store.level) • \(store.totalXP) نقطة خبرة")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                }
+        VStack(alignment: .leading, spacing: AamalTheme.sectionSpacing) {
+            HStack(alignment: .top, spacing: 12) {
+                AamalSectionHeader(
+                    title: leagueTitle,
+                    subtitle: "المستوى \(store.level) • \(store.totalXP) نقطة خبرة",
+                    tint: AamalTheme.gold,
+                    systemImage: "trophy.fill"
+                )
 
-                Spacer()
-
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text("مؤشر الزخم")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    Text("\(momentumScore)")
-                        .font(.title2.weight(.heavy))
-                        .foregroundColor(AamalTheme.gold)
-                }
+                AamalStatPill(
+                    title: "مؤشر الزخم",
+                    value: "\(momentumScore)",
+                    tint: AamalTheme.gold,
+                    alignment: .center
+                )
+                .frame(maxWidth: 118)
             }
 
             ProgressView(value: store.levelProgress)
                 .tint(AamalTheme.gold)
 
             HStack(spacing: 10) {
-                HeroStatPill(title: "إلى المستوى التالي", value: "\(store.xpToNextLevel) XP", tint: AamalTheme.gold)
-                HeroStatPill(title: "الأوسمة", value: "\(store.badges.count)", tint: AamalTheme.emerald)
+                AamalStatPill(title: "إلى المستوى التالي", value: "\(store.xpToNextLevel) XP", tint: AamalTheme.gold)
+                AamalStatPill(title: "الأوسمة", value: "\(store.badges.count)", tint: AamalTheme.emerald)
             }
         }
         .aamalCardSolid()
-    }
-}
-
-private struct HeroStatPill: View {
-    let title: String
-    let value: String
-    let tint: Color
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-            Text(value)
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(.primary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(tint.opacity(0.1))
-        .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }
 

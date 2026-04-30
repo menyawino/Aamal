@@ -76,6 +76,10 @@ struct QuranRevisionView: View {
                             .aamalCard()
                     }
 
+                    QuranStrengthDistributionCard(
+                        comparison: store.todaysQuranStrengthComparison
+                    )
+
                     QuranQiyamCard(
                         insight: todaysPlan.qiyamInsight,
                         isEnabled: qiyamEnabled,
@@ -117,7 +121,7 @@ struct QuranRevisionView: View {
                     )
                 }
                 .padding(.horizontal)
-                .padding(.bottom, 24)
+                .padding(.bottom, AamalTheme.screenBottomInset)
             }
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
@@ -127,8 +131,9 @@ struct QuranRevisionView: View {
                     .accessibilityLabel("إعدادات خطة الحفظ")
                 }
             }
-            .background(AamalTheme.backgroundGradient.ignoresSafeArea())
             .navigationTitle("خطة الحفظ")
+            .navigationBarTitleDisplayMode(.inline)
+            .aamalScreen()
         }
         .onAppear(perform: syncDraftFromStore)
         .sheet(isPresented: $showSettingsSheet) {
@@ -154,9 +159,9 @@ struct QuranRevisionView: View {
                     }
                     .padding()
                 }
-                .background(AamalTheme.backgroundGradient.ignoresSafeArea())
                 .navigationTitle("إعدادات الخطة")
                 .navigationBarTitleDisplayMode(.inline)
+                .aamalScreen()
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("إغلاق") {
@@ -762,6 +767,380 @@ private struct QuranAyahSelector: View {
     }
 }
 
+private extension QuranStrengthTier {
+    var tint: Color {
+        switch self {
+        case .fragile:
+            return AamalTheme.gold
+        case .building:
+            return AamalTheme.mint
+        case .anchored:
+            return AamalTheme.emerald
+        case .unmemorized:
+            return Color(.systemGray4)
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .fragile:
+            return "exclamationmark.triangle.fill"
+        case .building:
+            return "hammer.fill"
+        case .anchored:
+            return "checkmark.seal.fill"
+        case .unmemorized:
+            return "circle.dotted"
+        }
+    }
+}
+
+private struct QuranStrengthDistributionCard: View {
+    let comparison: QuranStrengthDistributionComparison
+
+    @State private var selectedRubIndex: Int?
+
+    private let totalQuranRubs = 240
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            QuranSectionHeader(
+                title: "خريطة قوة الحفظ",
+                subtitle: dashboardSubtitle,
+                tint: AamalTheme.emerald,
+                systemImage: "square.grid.3x3.fill"
+            )
+
+            if let focusSummary {
+                QuranModeBanner(
+                    title: "أين يتركز الجهد الآن؟",
+                    subtitle: focusSummary,
+                    tint: AamalTheme.gold
+                )
+            }
+
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 2), spacing: 10) {
+                ForEach(QuranStrengthTier.allCases, id: \.self) { tier in
+                    QuranStrengthLegendCard(
+                        tier: tier,
+                        todayCount: comparison.today.count(for: tier),
+                        lastWeekCount: comparison.lastWeek.count(for: tier),
+                        total: totalQuranRubs
+                    )
+                }
+            }
+
+            if let selectedTodaySample {
+                QuranStrengthRubDetailCard(
+                    today: selectedTodaySample,
+                    lastWeek: comparison.lastWeek.sample(for: selectedTodaySample.rub.globalRubIndex)
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("التوزيع على كامل القرآن")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Text("اضغط على أي ربع لمعرفة درجته وسبب ضعفه")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                ForEach(juzRows, id: \.juzNumber) { row in
+                    HStack(spacing: 8) {
+                        Text("ج\(row.juzNumber)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .frame(width: 28, alignment: .leading)
+
+                        HStack(spacing: 4) {
+                            ForEach(row.samples) { sample in
+                                Button(action: { selectedRubIndex = sample.rub.globalRubIndex }) {
+                                    RoundedRectangle(cornerRadius: 5)
+                                        .fill(sample.tier.tint.opacity(cellOpacity(for: sample)))
+                                        .frame(maxWidth: .infinity, minHeight: 14, maxHeight: 14)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 5)
+                                                .stroke(
+                                                    sample.rub.globalRubIndex == activeRubIndex
+                                                        ? AamalTheme.ink.opacity(0.7)
+                                                        : sample.tier.tint.opacity(0.16),
+                                                    lineWidth: sample.rub.globalRubIndex == activeRubIndex ? 1.6 : 1
+                                                )
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("\(sample.rub.detailedTitle) - \(sample.tier.title) - \(Int(sample.score.rounded()))٪")
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(14)
+            .background(Color(.secondarySystemBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+        }
+        .aamalCardSolid()
+    }
+
+    private var dashboardSubtitle: String {
+        let memorizedCount = comparison.today.samples.filter { $0.tier != .unmemorized }.count
+        guard memorizedCount > 0 else {
+            return "ستتحول هذه الخريطة إلى توزيع حيّ بمجرد تحديد مقدار المحفوظ."
+        }
+
+        return "الدرجة هنا مبنية على نموذج استدعاء + ثبات: احتمال التذكر يهبط مع الزمن وفق منحنى نسيان أسي، وثبات الربع يرتفع كلما تكررت له مراجعات ناجحة متباعدة."
+    }
+
+    private var activeRubIndex: Int {
+        if let selectedRubIndex,
+           comparison.today.sample(for: selectedRubIndex)?.tier != .unmemorized {
+            return selectedRubIndex
+        }
+        return suggestedSample?.rub.globalRubIndex ?? 1
+    }
+
+    private var selectedTodaySample: QuranRubStrengthSample? {
+        comparison.today.sample(for: activeRubIndex)
+    }
+
+    private var suggestedSample: QuranRubStrengthSample? {
+        comparison.today.samples
+            .filter { $0.tier != .unmemorized }
+            .sorted { lhs, rhs in
+                strengthPriority(for: lhs) < strengthPriority(for: rhs)
+            }
+            .first
+    }
+
+    private var juzRows: [(juzNumber: Int, samples: [QuranRubStrengthSample])] {
+        let samples = comparison.today.samples
+        return stride(from: 0, to: samples.count, by: 8).enumerated().map { offset, start in
+            let end = min(start + 8, samples.count)
+            return (juzNumber: offset + 1, samples: Array(samples[start..<end]))
+        }
+    }
+
+    private var focusSummary: String? {
+        guard let focusedRow = juzRows.max(by: { focusWeight(for: $0.samples) < focusWeight(for: $1.samples) }) else {
+            return nil
+        }
+
+        let fragileCount = focusedRow.samples.filter { $0.tier == .fragile }.count
+        let buildingCount = focusedRow.samples.filter { $0.tier == .building }.count
+        let averageScore = Int((focusedRow.samples.map(\.score).reduce(0, +) / Double(focusedRow.samples.count)).rounded())
+        guard fragileCount > 0 || buildingCount > 0 else { return nil }
+
+        return "أثقل تركّزٍ الآن في الجزء \(focusedRow.juzNumber): فيه \(fragileCount) أرباع هشة و\(buildingCount) أرباع قيد التثبيت، ومتوسط الدرجة فيه \(averageScore)٪."
+    }
+
+    private func strengthPriority(for sample: QuranRubStrengthSample) -> (Int, Double, Int) {
+        let urgency: Int
+        if sample.isManuallyWeak {
+            urgency = 0
+        } else if sample.isInRecoveryToday {
+            urgency = 1
+        } else if sample.tier == .fragile {
+            urgency = 2
+        } else if sample.isDueToday {
+            urgency = 3
+        } else if sample.tier == .building {
+            urgency = 4
+        } else {
+            urgency = 5
+        }
+
+        return (urgency, sample.score, sample.rub.globalRubIndex)
+    }
+
+    private func focusWeight(for samples: [QuranRubStrengthSample]) -> Int {
+        samples.reduce(0) { partial, sample in
+            switch sample.tier {
+            case .fragile:
+                return partial + 4
+            case .building:
+                return partial + 2
+            case .anchored:
+                return partial + (sample.isDueToday ? 1 : 0)
+            case .unmemorized:
+                return partial
+            }
+        }
+    }
+
+    private func cellOpacity(for sample: QuranRubStrengthSample) -> Double {
+        guard sample.tier != .unmemorized else { return 0.30 }
+        return min(0.95, max(0.45, 0.35 + (sample.score / 100) * 0.6))
+    }
+}
+
+private struct QuranStrengthLegendCard: View {
+    let tier: QuranStrengthTier
+    let todayCount: Int
+    let lastWeekCount: Int
+    let total: Int
+
+    private var delta: Int {
+        todayCount - lastWeekCount
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: tier.systemImage)
+                    .foregroundColor(tier.tint)
+                Text(tier.title)
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Spacer()
+                Text(deltaLabel)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Text("اليوم: \(todayCount) • قبل أسبوع: \(lastWeekCount)")
+                .font(.headline)
+
+            Text(tier.subtitle)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+
+            VStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("اليوم")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(todayCount) / \(total)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    ProgressView(value: Double(todayCount), total: Double(total))
+                        .tint(tier.tint)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("قبل 7 أيام")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        Spacer()
+                        Text("\(lastWeekCount) / \(total)")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    ProgressView(value: Double(lastWeekCount), total: Double(total))
+                        .tint(tier.tint.opacity(0.55))
+                }
+            }
+        }
+        .padding(12)
+        .background(tier.tint.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(tier.tint.opacity(0.14), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private var deltaLabel: String {
+        let prefix = delta > 0 ? "+" : ""
+        return "Δ \(prefix)\(delta)"
+    }
+}
+
+private struct QuranStrengthRubDetailCard: View {
+    let today: QuranRubStrengthSample
+    let lastWeek: QuranRubStrengthSample?
+
+    private var scoreDelta: Int {
+        Int((today.score - (lastWeek?.score ?? today.score)).rounded())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(today.rub.detailedTitle)
+                        .font(.headline)
+                    Text(today.rub.spanSummary.isEmpty ? today.rub.pageSpanText : today.rub.spanSummary)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                QuranStatusBadge(
+                    title: today.tier.title,
+                    systemImage: today.tier.systemImage,
+                    tint: today.tier.tint
+                )
+            }
+
+            HStack(spacing: 10) {
+                QuranMetricPill(title: "درجة اليوم", value: "\(Int(today.score.rounded()))٪", accent: today.tier.tint)
+                QuranMetricPill(title: "التغير عن الأسبوع", value: deltaLabel, accent: scoreDelta >= 0 ? AamalTheme.emerald : AamalTheme.gold)
+                QuranMetricPill(title: "ثبات متوقع", value: "\(Int(today.stabilityDays.rounded())) يوم", accent: AamalTheme.ink.opacity(0.78))
+                QuranMetricPill(title: "مرات مرصودة", value: "\(today.reviewCount)", accent: AamalTheme.mint)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("الحالة الحالية وسببها")
+                    .font(.subheadline)
+                    .fontWeight(.semibold)
+                Text(today.weaknessReason.title)
+                    .font(.subheadline)
+                    .foregroundColor(today.tier.tint)
+                Text(today.weaknessDetail)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                if today.isManuallyWeak {
+                    QuranStatusBadge(title: "وسم يدوي", systemImage: "hand.point.up.left.fill", tint: AamalTheme.gold)
+                }
+                if today.isInRecoveryToday {
+                    QuranStatusBadge(title: "استرجاع اليوم", systemImage: "arrow.uturn.backward.circle.fill", tint: AamalTheme.gold)
+                }
+                if today.isDueToday {
+                    QuranStatusBadge(title: "مطلوب اليوم", systemImage: "calendar.badge.clock", tint: AamalTheme.mint)
+                }
+            }
+
+            Text(lastReviewText)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+        .padding(14)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+
+    private var deltaLabel: String {
+        let prefix = scoreDelta > 0 ? "+" : ""
+        return "\(prefix)\(scoreDelta)٪"
+    }
+
+    private var lastReviewText: String {
+        if let lastReviewDate = today.lastReviewDate {
+            return "آخر مراجعة مرصودة: \(formattedDate(lastReviewDate))"
+        }
+        return "لا توجد مراجعة مرصودة لهذا الربع داخل التطبيق بعد."
+    }
+
+    private func formattedDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ar")
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: date)
+    }
+}
+
 private struct QuranWeakSpotsDashboardCard: View {
     let plan: QuranAdaptiveDailyPlan
     let weakRubs: [QuranRubReference]
@@ -1249,23 +1628,7 @@ private struct QuranMetricPill: View {
     var accent: Color = AamalTheme.gold
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(value)
-                .font(.headline)
-                .foregroundColor(AamalTheme.ink)
-            Text(title)
-                .font(.caption2)
-                .foregroundColor(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 10)
-        .padding(.horizontal, 12)
-        .background(accent.opacity(0.10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(accent.opacity(0.14), lineWidth: 1)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        AamalStatPill(title: title, value: value, tint: accent)
     }
 }
 
@@ -1276,21 +1639,7 @@ private struct QuranSectionHeader: View {
     let systemImage: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: systemImage)
-                .foregroundColor(tint)
-                .frame(width: 26, height: 26)
-                .background(tint.opacity(0.12))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.headline)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
+        AamalSectionHeader(title: title, subtitle: subtitle, tint: tint, systemImage: systemImage)
     }
 }
 

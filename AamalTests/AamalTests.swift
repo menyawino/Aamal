@@ -225,6 +225,105 @@ struct AamalTests {
         #expect(reloadedSession.endAyah == qiyamAyah(2, 31))
     }
 
+    @Test func quranStrengthDecaysAndRecoversWithSpacedReview() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let (store, _) = makeStore(defaults: defaults)
+        let dayZero = qiyamDate(offsetDays: 0)
+        let dayOne = qiyamDate(offsetDays: 1)
+        let daySix = qiyamDate(offsetDays: 6)
+        let daySeven = qiyamDate(offsetDays: 7)
+        let dayEight = qiyamDate(offsetDays: 8)
+
+        store.configureQuranRevisionPlan(
+            juzCount: 0,
+            additionalHizb: 0,
+            additionalRub: 1,
+            dailyGoalRubs: 1,
+            recentWindowRubs: 1,
+            newMemorizationTargetRubs: 0,
+            prayerCapacities: [.fajr: 8, .dhuhr: 8, .asr: 0, .maghrib: 0, .isha: 0]
+        )
+
+        #expect(store.markQuranRevisionCompleted(on: dayZero))
+
+        let afterFirstReview = try #require(store.quranStrengthComparison(on: dayOne).today.sample(for: 1))
+        let decayed = try #require(store.quranStrengthComparison(on: daySix).today.sample(for: 1))
+        #expect(decayed.score < afterFirstReview.score)
+
+        #expect(store.markQuranRevisionCompleted(on: daySeven))
+
+        let recovered = try #require(store.quranStrengthComparison(on: dayEight).today.sample(for: 1))
+        #expect(recovered.score > decayed.score)
+        #expect(recovered.stabilityDays > decayed.stabilityDays)
+    }
+
+    @Test func quranStrengthComparisonShowsWeekOverWeekStateAndManualWeakReason() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let (store, _) = makeStore(defaults: defaults)
+        let dayZero = qiyamDate(offsetDays: 0)
+        let daySeven = qiyamDate(offsetDays: 7)
+        let dayEight = qiyamDate(offsetDays: 8)
+
+        store.configureQuranRevisionPlan(
+            juzCount: 0,
+            additionalHizb: 0,
+            additionalRub: 1,
+            dailyGoalRubs: 1,
+            recentWindowRubs: 1,
+            newMemorizationTargetRubs: 0,
+            prayerCapacities: [.fajr: 8, .dhuhr: 8, .asr: 0, .maghrib: 0, .isha: 0]
+        )
+
+        #expect(store.markQuranRevisionCompleted(on: dayZero))
+        #expect(store.markQuranRevisionCompleted(on: daySeven))
+        #expect(store.markQuranRubWeak(QuranRubReference(globalRubIndex: 1)))
+
+        let comparison = store.quranStrengthComparison(on: dayEight)
+        let today = try #require(comparison.today.sample(for: 1))
+        let lastWeek = try #require(comparison.lastWeek.sample(for: 1))
+
+        #expect(today.reviewCount == 2)
+        #expect(lastWeek.reviewCount == 1)
+        #expect(today.stabilityDays > lastWeek.stabilityDays)
+        #expect(today.weaknessReason == .manualWeak)
+    }
+
+    @Test func qiyamRangeStrengthensOnlyTheAffectedRubs() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let (store, _) = makeStore(defaults: defaults)
+        let dayZero = qiyamDate(offsetDays: 0)
+        let daySix = qiyamDate(offsetDays: 6)
+        let daySeven = qiyamDate(offsetDays: 7)
+
+        store.configureQuranRevisionPlan(
+            juzCount: 0,
+            additionalHizb: 0,
+            additionalRub: 2,
+            dailyGoalRubs: 1,
+            recentWindowRubs: 2,
+            newMemorizationTargetRubs: 0,
+            qiyamEnabled: true,
+            prayerCapacities: [.fajr: 8, .dhuhr: 8, .asr: 0, .maghrib: 0, .isha: 0]
+        )
+
+        #expect(store.markQuranRevisionCompleted(on: dayZero))
+        #expect(store.logQiyamSession(from: qiyamAyah(2, 1), to: qiyamAyah(2, 31), on: daySix))
+
+        let comparison = store.quranStrengthComparison(on: daySeven)
+        let rubOne = try #require(comparison.today.sample(for: 1))
+        let rubTwo = try #require(comparison.today.sample(for: 2))
+
+        #expect(rubOne.reviewCount > rubTwo.reviewCount)
+        #expect(rubOne.lastReviewDate == daySix)
+        #expect(rubOne.score > rubTwo.score)
+    }
+
     private static let referenceDate = Date(timeIntervalSince1970: 1_720_000_000)
 
     private func qiyamDate(offsetDays: Int) -> Date {

@@ -468,12 +468,25 @@ final class TaskStore: ObservableObject {
         adaptiveQuranPlan(for: Date())
     }
 
+    var todaysQuranStrengthComparison: QuranStrengthDistributionComparison {
+        quranStrengthComparison(on: Date())
+    }
+
     var todaysQuranRevision: [QuranRubReference] {
         quranRevisionAssignment(for: Date())
     }
 
     var upcomingQuranRevisionAssignments: [QuranDailyAssignment] {
         quranRevisionAssignments(days: 6)
+    }
+
+    func quranStrengthComparison(on referenceDate: Date = Date()) -> QuranStrengthDistributionComparison {
+        let today = dateKey(referenceDate)
+        let lastWeek = Calendar.current.date(byAdding: .day, value: -7, to: today) ?? today
+        return QuranStrengthDistributionComparison(
+            today: quranStrengthSnapshot(on: today, includeCurrentManualWeakFlags: true),
+            lastWeek: quranStrengthSnapshot(on: lastWeek, includeCurrentManualWeakFlags: false)
+        )
     }
 
     func isPrayerTask(_ task: Task) -> Bool {
@@ -692,6 +705,317 @@ final class TaskStore: ObservableObject {
             .last?
             .endAyah
     }
+
+        private struct QuranRubStrengthComputation {
+            let score: Double
+            let retrievability: Double
+            let stabilityDays: Double
+            let reviewCount: Int
+            let lastReviewDate: Date?
+        }
+
+        private struct QuranRubStrengthReviewEvent {
+            let date: Date
+            let weight: Double
+            let source: Source
+
+            enum Source {
+                case revisionPlan
+                case qiyam
+            }
+        }
+
+        private func quranStrengthSnapshot(on referenceDate: Date, includeCurrentManualWeakFlags: Bool) -> QuranStrengthDistributionSnapshot {
+            let dayKey = dateKey(referenceDate)
+            let totalRubs = quranRevisionPlan.totalMemorizedRubs
+            let reviewHistory = quranRubReviewHistory(until: dayKey)
+            let dueIDs = Set(quranRevisionAssignmentHistory(for: dayKey).map(\.globalRubIndex))
+            let recoveryIDs = Set(
+                adaptiveQuranPlan(for: dayKey)
+                    .requiredRevision
+                    .filter { $0.kind == .recovery }
+                    .flatMap(\.rubs)
+                    .map(\.globalRubIndex)
+            )
+            let manualWeakIDs = includeCurrentManualWeakFlags ? Set(quranRevisionPlan.weakRubIndices) : []
+
+            let samples = (1...240).map { rubIndex in
+                let rub = QuranRubReference(globalRubIndex: rubIndex)
+
+                guard rubIndex <= totalRubs else {
+                    return QuranRubStrengthSample(
+                        rub: rub,
+                        score: 0,
+                        retrievability: 0,
+                        stabilityDays: 0,
+                        reviewCount: 0,
+                        lastReviewDate: nil,
+                        tier: .unmemorized,
+                        weaknessReason: .unmemorized,
+                        weaknessDetail: "هذا الربع ليس ضمن مقدار المحفوظ الحالي بعد.",
+                        isDueToday: false,
+                        isInRecoveryToday: false,
+                        isManuallyWeak: false
+                    )
+                }
+
+                let computation = quranStrengthComputation(
+                    for: rubIndex,
+                    reviewEvents: reviewHistory[rubIndex] ?? [],
+                    referenceDate: dayKey
+                )
+                let isDueToday = dueIDs.contains(rubIndex)
+                let isInRecoveryToday = recoveryIDs.contains(rubIndex)
+                let isManuallyWeak = manualWeakIDs.contains(rubIndex)
+                let adjustedScore = adjustedQuranStrengthScore(
+                    baseScore: computation.score,
+                    isInRecoveryToday: isInRecoveryToday,
+                    isManuallyWeak: isManuallyWeak
+                )
+                let tier = quranStrengthTier(for: adjustedScore)
+                let weakness = quranWeaknessAssessment(
+                    for: rubIndex,
+                    computation: computation,
+                    isDueToday: isDueToday,
+                    isInRecoveryToday: isInRecoveryToday,
+                    isManuallyWeak: isManuallyWeak,
+                    referenceDate: dayKey
+                )
+
+                return QuranRubStrengthSample(
+                    rub: rub,
+                    score: adjustedScore,
+                    retrievability: computation.retrievability,
+                    stabilityDays: computation.stabilityDays,
+                    reviewCount: computation.reviewCount,
+                    lastReviewDate: computation.lastReviewDate,
+                    tier: tier,
+                    weaknessReason: weakness.reason,
+                    weaknessDetail: weakness.detail,
+                    isDueToday: isDueToday,
+                    isInRecoveryToday: isInRecoveryToday,
+                    isManuallyWeak: isManuallyWeak
+                )
+            }
+
+            return QuranStrengthDistributionSnapshot(referenceDate: dayKey, samples: samples)
+        }
+
+        private func quranRubReviewHistory(until referenceDate: Date) -> [Int: [QuranRubStrengthReviewEvent]] {
+            let dayKey = dateKey(referenceDate)
+            let completedDays = quranRevisionPlan.completedDates
+                .filter { $0 <= dayKey }
+                .sorted()
+            let qiyamSessions = quranRevisionPlan.qiyamSessions
+                .filter { $0.date <= dayKey }
+                .sorted { $0.date < $1.date }
+
+            var history: [Int: [QuranRubStrengthReviewEvent]] = [:]
+            for completedDay in completedDays {
+                for rub in quranRevisionAssignmentHistory(for: completedDay) {
+                    history[rub.globalRubIndex, default: []].append(
+                        QuranRubStrengthReviewEvent(date: completedDay, weight: 1, source: .revisionPlan)
+                    )
+                }
+            }
+
+            for session in qiyamSessions {
+                for overlap in qiyamRubOverlaps(for: session) {
+                    history[overlap.rubIndex, default: []].append(
+                        QuranRubStrengthReviewEvent(date: session.date, weight: overlap.weight, source: .qiyam)
+                    )
+                }
+            }
+
+            return history
+        }
+
+        private func qiyamRubOverlaps(for session: QiyamSession) -> [(rubIndex: Int, weight: Double)] {
+            guard let startAyah = session.startAyah,
+                  let endAyah = session.endAyah,
+                  let startPage = QuranAyahCatalog.estimatedPage(for: startAyah),
+                  let endPage = QuranAyahCatalog.estimatedPage(for: endAyah) else {
+                return []
+            }
+
+            let lowerPage = min(startPage, endPage)
+            let upperPage = max(startPage, endPage)
+            let coveredPageCount = max(1, upperPage - lowerPage + 1)
+
+            return (1...quranRevisionPlan.totalMemorizedRubs).compactMap { rubIndex in
+                guard let metadata = QuranRubReference(globalRubIndex: rubIndex).metadata else {
+                    return nil
+                }
+
+                let overlapStart = max(lowerPage, metadata.startPage)
+                let overlapEnd = min(upperPage, metadata.endPage)
+                guard overlapStart <= overlapEnd else { return nil }
+
+                let overlapPages = overlapEnd - overlapStart + 1
+                let coverage = Double(overlapPages) / Double(metadata.pageCount)
+                let rangeShare = Double(overlapPages) / Double(coveredPageCount)
+                let weight = min(0.85, max(0.22, 0.18 + (coverage * 0.5) + (rangeShare * 0.32)))
+                return (rubIndex: rubIndex, weight: weight)
+            }
+        }
+
+        private func quranRevisionAssignmentHistory(for date: Date) -> [QuranRubReference] {
+            let totalRubs = quranRevisionPlan.totalMemorizedRubs
+            guard totalRubs > 0 else { return [] }
+
+            let dayKey = dateKey(date)
+            let completedCycleCount = quranRevisionPlan.completedDates.filter { $0 < dayKey }.count
+            let completedCycleOffset = completedCycleCount * quranRevisionPlan.dailyGoalRubs
+            let startIndex = completedCycleOffset % totalRubs
+
+            return (0..<quranRevisionPlan.dailyGoalRubs).map { offset in
+                let index = ((startIndex + offset) % totalRubs) + 1
+                return QuranRubReference(globalRubIndex: index)
+            }
+        }
+
+        private func quranStrengthComputation(
+            for rubIndex: Int,
+            reviewEvents: [QuranRubStrengthReviewEvent],
+            referenceDate: Date
+        ) -> QuranRubStrengthComputation {
+            let totalRubs = max(1, quranRevisionPlan.totalMemorizedRubs)
+            let maturity = totalRubs > 1
+                ? Double(max(0, totalRubs - rubIndex)) / Double(totalRubs - 1)
+                : 1
+
+            var stabilityDays = 5.5 + pow(maturity, 0.8) * 42
+            let seededRetrievability = 0.58 + pow(maturity, 0.65) * 0.22
+            let seededElapsedDays = max(0.4, -stabilityDays * Foundation.log(seededRetrievability))
+            var lastReviewDate = Calendar.current.date(byAdding: .day, value: -Int(seededElapsedDays.rounded()), to: referenceDate)
+            var reviewCount = 0
+
+            for reviewEvent in reviewEvents.sorted(by: { $0.date < $1.date }) where reviewEvent.date <= referenceDate {
+                let reviewDate = reviewEvent.date
+                let intervalDays = max(0.5, quranDaysBetween(lastReviewDate, and: reviewDate))
+                let retrievabilityAtReview = Foundation.exp(-intervalDays / max(1.5, stabilityDays))
+                let spacingBoost = 1.18 + min(0.45, (intervalDays / max(2, stabilityDays)) * 0.55)
+                let retrievalBoost = 1 + (1 - retrievabilityAtReview) * 0.35
+                let sourceFactor = reviewEvent.source == .qiyam ? 0.78 : 1
+                let weightedBoost = 1 + ((spacingBoost * retrievalBoost) - 1) * max(0.12, reviewEvent.weight) * sourceFactor
+                stabilityDays = min(180, max(3, stabilityDays * weightedBoost))
+                lastReviewDate = reviewDate
+                reviewCount += 1
+            }
+
+            let daysSinceLastReview = max(0, quranDaysBetween(lastReviewDate, and: referenceDate))
+            let retrievability = Foundation.exp(-daysSinceLastReview / max(1.5, stabilityDays))
+            let normalizedStability = min(1, Foundation.log1p(stabilityDays) / Foundation.log1p(180))
+            let score = min(100, max(0, (retrievability * 0.5 + normalizedStability * 0.5) * 100))
+
+            return QuranRubStrengthComputation(
+                score: score,
+                retrievability: retrievability,
+                stabilityDays: stabilityDays,
+                reviewCount: reviewCount,
+                lastReviewDate: lastReviewDate
+            )
+        }
+
+        private func adjustedQuranStrengthScore(
+            baseScore: Double,
+            isInRecoveryToday: Bool,
+            isManuallyWeak: Bool
+        ) -> Double {
+            var score = baseScore
+            if isInRecoveryToday {
+                score *= 0.82
+            }
+            if isManuallyWeak {
+                score *= 0.72
+            }
+            return min(100, max(0, score))
+        }
+
+        private func quranStrengthTier(for score: Double) -> QuranStrengthTier {
+            switch score {
+            case ..<44:
+                return .fragile
+            case ..<76:
+                return .building
+            default:
+                return .anchored
+            }
+        }
+
+        private func quranWeaknessAssessment(
+            for rubIndex: Int,
+            computation: QuranRubStrengthComputation,
+            isDueToday: Bool,
+            isInRecoveryToday: Bool,
+            isManuallyWeak: Bool,
+            referenceDate: Date
+        ) -> (reason: QuranStrengthWeaknessReason, detail: String) {
+            let lastReviewText = computation.lastReviewDate.map {
+                quranRelativeDayDescription(since: $0, until: referenceDate)
+            } ?? "لا يوجد رصد بعد"
+
+            if isManuallyWeak {
+                return (
+                    .manualWeak,
+                    "هذا الربع وُسم يدويًا بعد تعثر صريح، لذلك خُفِّض تقديره حتى يمر بمراجعات ناجحة جديدة. آخر مرور: \(lastReviewText)."
+                )
+            }
+
+            if isInRecoveryToday {
+                return (
+                    .recovering,
+                    "أدخلته الخطة في استرجاع اليوم لأن استدعاءه الحالي دون المستوى المريح. آخر مرور: \(lastReviewText)."
+                )
+            }
+
+            if computation.retrievability < 0.36 {
+                return (
+                    .overdue,
+                    "انخفض احتمال الاستدعاء بسبب طول الفاصل منذ آخر مراجعة. آخر مرور: \(lastReviewText)."
+                )
+            }
+
+            if computation.stabilityDays < 14 {
+                return (
+                    .lowStability,
+                    "الاستدعاء الحالي مقبول، لكن ثباته الزمني ما زال قصيرًا ويحتاج تكرارًا متباعدًا حتى يرسخ. آخر مرور: \(lastReviewText)."
+                )
+            }
+
+            if isDueToday || computation.retrievability < 0.58 {
+                return (
+                    .dueToday,
+                    "وصل إلى نافذة المراجعة المناسبة اليوم قبل أن يهبط الاستدعاء أكثر. آخر مرور: \(lastReviewText)."
+                )
+            }
+
+            return (
+                .steady,
+                "مستقر الآن: الاستدعاء والثبات متوازنان، وآخر مرور كان \(lastReviewText)."
+            )
+        }
+
+        private func quranDaysBetween(_ start: Date?, and end: Date) -> Double {
+            guard let start else { return 0 }
+            return max(0, end.timeIntervalSince(start) / 86_400)
+        }
+
+        private func quranRelativeDayDescription(since start: Date, until end: Date) -> String {
+            let dayCount = max(0, Int(quranDaysBetween(start, and: end).rounded()))
+            switch dayCount {
+            case 0:
+                return "اليوم"
+            case 1:
+                return "منذ يوم"
+            case 2:
+                return "منذ يومين"
+            case 3...10:
+                return "منذ \(dayCount) أيام"
+            default:
+                return "منذ \(dayCount) يومًا"
+            }
+        }
 
     func isQuranRevisionCompleted(on date: Date = Date()) -> Bool {
         let dayKey = dateKey(date)
