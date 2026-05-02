@@ -145,11 +145,11 @@ public enum QuranAyahCatalog {
     static func ayahCount(from start: QuranAyahReference, to end: QuranAyahReference) -> Int? {
         guard let startIndex = globalAyahIndex(for: start),
               let endIndex = globalAyahIndex(for: end),
-              endIndex > startIndex else {
+              endIndex >= startIndex else {
             return nil
         }
 
-        return endIndex - startIndex
+        return endIndex - startIndex + 1
     }
 
     static func estimatedPage(for reference: QuranAyahReference) -> Int? {

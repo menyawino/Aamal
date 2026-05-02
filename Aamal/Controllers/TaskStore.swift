@@ -731,7 +731,7 @@ final class TaskStore: ObservableObject {
             let dayKey = dateKey(referenceDate)
             let totalRubs = quranRevisionPlan.totalMemorizedRubs
             let reviewHistory = quranRubReviewHistory(until: dayKey)
-            let dueIDs = Set(quranRevisionAssignmentHistory(for: dayKey).map(\.globalRubIndex))
+            let dueIDs = Set(quranRevisionAssignment(for: dayKey).map(\.globalRubIndex))
             let recoveryIDs = Set(
                 adaptiveQuranPlan(for: dayKey)
                     .requiredRevision
@@ -1074,7 +1074,7 @@ final class TaskStore: ObservableObject {
         let activePrayers = Set(
             adaptiveQuranPlan(for: dayKey)
                 .prayerAssignments
-                .filter { $0.assignedAyahs > 0 && !$0.segments.isEmpty }
+                .filter { $0.capacityAyahs > 0 }
                 .map(\ .prayer)
         )
         guard activePrayers.contains(prayer) else { return false }
@@ -1094,7 +1094,7 @@ final class TaskStore: ObservableObject {
 
         let completedPrayers = quranRevisionPlan.completedPrayers(on: dayKey)
         if !activePrayers.isEmpty, activePrayers.isSubset(of: completedPrayers) {
-            return markQuranRevisionCompleted(on: dayKey)
+            _ = markQuranRevisionCompleted(on: dayKey)
         }
 
         saveData()
@@ -1195,6 +1195,7 @@ final class TaskStore: ObservableObject {
 
         quranRevisionPlan.weakRubIndices.removeAll { $0 == rub.globalRubIndex }
         quranRevisionPlan.weakRubIndices.insert(rub.globalRubIndex, at: 0)
+        saveData()
         return true
     }
 
@@ -1202,7 +1203,9 @@ final class TaskStore: ObservableObject {
     func clearQuranRubWeak(_ rub: QuranRubReference) -> Bool {
         let previousCount = quranRevisionPlan.weakRubIndices.count
         quranRevisionPlan.weakRubIndices.removeAll { $0 == rub.globalRubIndex }
-        return quranRevisionPlan.weakRubIndices.count != previousCount
+        let changed = quranRevisionPlan.weakRubIndices.count != previousCount
+        if changed { saveData() }
+        return changed
     }
 
     func quranRevisionAssignment(for date: Date) -> [QuranRubReference] {
@@ -1225,7 +1228,7 @@ final class TaskStore: ObservableObject {
         let calendar = Calendar.current
         let today = dateKey(Date())
 
-        return (0...days).compactMap { offset in
+        return (0..<days).compactMap { offset in
             guard let date = calendar.date(byAdding: .day, value: offset, to: today) else { return nil }
             return QuranDailyAssignment(date: date, rubs: quranRevisionAssignment(for: date))
         }
@@ -1234,6 +1237,7 @@ final class TaskStore: ObservableObject {
     private struct QuranSafetyContext {
         let recentPool: [QuranRubReference]
         let recoveryRubs: [QuranRubReference]
+        let recoveryIDs: Set<Int>
         let recentRubs: [QuranRubReference]
         let pastRubs: [QuranRubReference]
         let minimumSafeAyahs: Int
@@ -1377,6 +1381,7 @@ final class TaskStore: ObservableObject {
         return QuranSafetyContext(
             recentPool: recentPool,
             recoveryRubs: recoveryRubs,
+            recoveryIDs: recoveryIDs,
             recentRubs: recentRubs,
             pastRubs: pastRubs,
             minimumSafeAyahs: minimumSafeAyahs
@@ -1457,7 +1462,9 @@ final class TaskStore: ObservableObject {
 
         if capacityCursor < activePrayerCapacities.count {
             let quota = activePrayerCapacities[capacityCursor].1
-            let recentSource = context.recentRubs.isEmpty ? context.recentPool : context.recentRubs
+            let recentSource = context.recentRubs.isEmpty
+                ? context.recentPool.filter { !context.recoveryIDs.contains($0.globalRubIndex) }
+                : context.recentRubs
             let recentSlices = quotaPageSlices(from: recentSource, kind: .recentRevision, totalAyahs: quota, prioritizeLatestPages: true)
             slices.append(contentsOf: recentSlices)
             if let item = makePlanSummary(
@@ -1569,7 +1576,6 @@ final class TaskStore: ObservableObject {
             return QuranRecoveryProfile(gapDays: missedDays, completedRecoveryDays: 0, currentDayIndex: 1, active: true)
         }
 
-        let calendar = Calendar.current
         let completedBeforeDate = quranRevisionPlan.completedDates.filter { $0 < date }.sorted()
         let completedSet = Set(completedBeforeDate)
         var cursor = previousDay(before: date)
@@ -1584,13 +1590,13 @@ final class TaskStore: ObservableObject {
             return QuranRecoveryProfile(gapDays: 0, completedRecoveryDays: 0, currentDayIndex: 0, active: false)
         }
 
-        guard let lastCompleted = completedBeforeDate.last,
-              let runStart = calendar.date(byAdding: .day, value: -(runLength - 1), to: lastCompleted) else {
-            return QuranRecoveryProfile(gapDays: 0, completedRecoveryDays: 0, currentDayIndex: 0, active: false)
+        var gapDaysBeforeRun = 0
+        var checkDate = cursor
+        while !completedSet.contains(checkDate) && checkDate >= quranRevisionPlan.startDate {
+            gapDaysBeforeRun += 1
+            checkDate = previousDay(before: checkDate)
         }
 
-        let anchorBeforeRun = completedBeforeDate.last(where: { $0 < runStart }) ?? quranRevisionPlan.startDate
-        let gapDaysBeforeRun = max(0, (calendar.dateComponents([.day], from: anchorBeforeRun, to: runStart).day ?? 0) - 1)
         let recoveryUnlocked = runLength >= unlockConsistencyDays && historicalCompliance >= 0.85
         let active = gapDaysBeforeRun >= lapseThresholdDays && !recoveryUnlocked
 
@@ -1879,7 +1885,7 @@ final class TaskStore: ObservableObject {
         guard count > 0, upperBound > 0 else { return [] }
 
         let completedCycleCount = quranRevisionPlan.completedDates.filter { $0 < date }.count
-        let startIndex = (completedCycleCount * max(1, count)) % upperBound
+        let startIndex = (completedCycleCount * max(1, quranRevisionPlan.dailyGoalRubs)) % upperBound
 
         var rubs: [QuranRubReference] = []
         let availableCount = max(0, upperBound - excluded.filter { $0 <= upperBound }.count)

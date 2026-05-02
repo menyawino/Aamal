@@ -21,6 +21,13 @@ struct QuranRevisionView: View {
     @State private var feedbackMessage: String = ""
     @State private var showSettingsSheet = false
 
+    // Collapsible section states
+    @State private var isQiyamExpanded = true
+    @State private var isRequiredRevisionExpanded = true
+    @State private var isWeakSpotsExpanded = true
+    @State private var isSafeguardsExpanded = true
+    @State private var isPrayerDistributionExpanded = true
+
     init(store: TaskStore) {
         self.store = store
 
@@ -84,22 +91,30 @@ struct QuranRevisionView: View {
                     QuranStrengthDistributionCard(store: store)
                     .aamalEntrance(2)
 
-                    QuranQiyamCard(
-                        insight: todaysPlan.qiyamInsight,
-                        isEnabled: qiyamEnabled,
-                        startLocked: qiyamStartIsLocked,
-                        startSummary: qiyamStartReferenceDraft?.title,
-                        savedRangeSummary: todaysPlan.qiyamInsight.rangeSummary,
-                        startSurahIndex: $qiyamStartSurahIndex,
-                        startAyah: $qiyamStartAyah,
-                        stopSurahIndex: $qiyamStopSurahIndex,
-                        stopAyah: $qiyamStopAyah,
-                        computedAyahCount: draftQiyamAyahCount,
-                        validationMessage: qiyamValidationMessage,
-                        saveAction: saveQiyam,
-                        clearAction: clearQiyam,
-                        openSettingsAction: { showSettingsSheet = true }
-                    )
+                    CollapsibleSection(
+                        title: "قيام الليل",
+                        subtitle: qiyamEnabled ? (todaysPlan.qiyamInsight.ayatCount > 0 ? "تم تسجيل \(todaysPlan.qiyamInsight.ayatCount) آية" : "اختياري اليوم") : "الدمج متوقف",
+                        systemImage: "moon.stars.fill",
+                        tint: AamalTheme.ink.opacity(0.8),
+                        isExpanded: $isQiyamExpanded
+                    ) {
+                        QuranQiyamCard(
+                            insight: todaysPlan.qiyamInsight,
+                            isEnabled: qiyamEnabled,
+                            startLocked: qiyamStartIsLocked,
+                            startSummary: qiyamStartReferenceDraft?.title,
+                            savedRangeSummary: todaysPlan.qiyamInsight.rangeSummary,
+                            startSurahIndex: $qiyamStartSurahIndex,
+                            startAyah: $qiyamStartAyah,
+                            stopSurahIndex: $qiyamStopSurahIndex,
+                            stopAyah: $qiyamStopAyah,
+                            computedAyahCount: draftQiyamAyahCount,
+                            validationMessage: qiyamValidationMessage,
+                            saveAction: saveQiyam,
+                            clearAction: clearQiyam,
+                            openSettingsAction: { showSettingsSheet = true }
+                        )
+                    }
                     .aamalEntrance(3)
 
                     if let newItem = todaysPlan.newMemorization {
@@ -107,28 +122,60 @@ struct QuranRevisionView: View {
                             .aamalEntrance(4)
                     }
 
-                    QuranRequiredRevisionCard(plan: todaysPlan)
-                        .aamalEntrance(5)
+                    CollapsibleSection(
+                        title: "المراجعة المطلوبة",
+                        subtitle: todaysPlan.requiredRevision.isEmpty ? "اضبط المحفوظ ليظهر الحد الأدنى" : "\(todaysPlan.requiredRevision.count) بنود اليوم",
+                        systemImage: "books.vertical.fill",
+                        tint: quranModeTint(for: todaysPlan.mode),
+                        isExpanded: $isRequiredRevisionExpanded
+                    ) {
+                        QuranRequiredRevisionCard(plan: todaysPlan)
+                    }
+                    .aamalEntrance(5)
 
-                    QuranWeakSpotsDashboardCard(
-                        plan: todaysPlan,
-                        weakRubs: store.quranMarkedWeakRubs,
-                        clearWeakAction: clearWeakRub
-                    )
+                    CollapsibleSection(
+                        title: "لوحة الضعف",
+                        subtitle: store.quranMarkedWeakRubs.isEmpty && todaysPlan.prayerAssignments.flatMap({ $0.segments }).filter({ $0.kind == .recovery }).isEmpty ? "لا توجد بؤر ضعف صريحة" : "\(store.quranMarkedWeakRubs.count) مواضع معلّمة",
+                        systemImage: "waveform.path.ecg",
+                        tint: AamalTheme.gold,
+                        isExpanded: $isWeakSpotsExpanded
+                    ) {
+                        QuranWeakSpotsDashboardCard(
+                            plan: todaysPlan,
+                            weakRubs: store.quranMarkedWeakRubs,
+                            clearWeakAction: clearWeakRub
+                        )
+                    }
                     .aamalEntrance(6)
 
                     if !todaysPlan.safeguards.isEmpty {
-                        QuranPlanSafeguardsCard(plan: todaysPlan)
-                            .aamalEntrance(7)
+                        CollapsibleSection(
+                            title: "ضمانات اليوم",
+                            subtitle: "\(todaysPlan.safeguards.count) رسائل تحافظ على الاستمرار",
+                            systemImage: "checkmark.shield.fill",
+                            tint: quranModeTint(for: todaysPlan.mode),
+                            isExpanded: $isSafeguardsExpanded
+                        ) {
+                            QuranPlanSafeguardsCard(plan: todaysPlan)
+                        }
+                        .aamalEntrance(7)
                     }
 
-                    QuranPrayerDistributionCard(
-                        store: store,
-                        plan: todaysPlan,
-                        toggleWeakAction: toggleWeakRub,
-                        prayerLogAction: logPrayerRevision,
-                        completionAction: markTodayCompleted
-                    )
+                    CollapsibleSection(
+                        title: "توزيع المراجعة على الصلوات",
+                        subtitle: "\(todaysPlan.prayerAssignments.filter({ $0.capacityAyahs > 0 }).count) صلوات مفعلة",
+                        systemImage: "sun.and.horizon.fill",
+                        tint: quranModeTint(for: todaysPlan.mode),
+                        isExpanded: $isPrayerDistributionExpanded
+                    ) {
+                        QuranPrayerDistributionCard(
+                            store: store,
+                            plan: todaysPlan,
+                            toggleWeakAction: toggleWeakRub,
+                            prayerLogAction: logPrayerRevision,
+                            completionAction: markTodayCompleted
+                        )
+                    }
                     .aamalEntrance(8)
                 }
                 .padding(.horizontal, AamalTheme.sectionSpacing)
@@ -843,6 +890,8 @@ private struct QuranStrengthDistributionCard: View {
         cachedComparison ?? store.todaysQuranStrengthComparison
     }
 
+    @State private var highlightFilter: QuranStrengthTier? = nil
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
@@ -880,6 +929,10 @@ private struct QuranStrengthDistributionCard: View {
                 )
             }
 
+            if !isMultiSelectMode {
+                statsSummaryBar
+            }
+
             if let focusSummary, !isMultiSelectMode {
                 QuranModeBanner(
                     title: "أين يتركز الجهد الآن؟",
@@ -907,7 +960,14 @@ private struct QuranStrengthDistributionCard: View {
                 }
             }
 
-            if let selectedTodaySample, !isMultiSelectMode {
+            if isMultiSelectMode, !selectedRubIndices.isEmpty {
+                QuranBatchEditPanel(
+                    selectedCount: selectedRubIndices.count,
+                    store: store,
+                    selectedRubs: selectedRubs(),
+                    onSave: { }
+                )
+            } else if let selectedTodaySample {
                 QuranStrengthRubDetailCard(
                     today: selectedTodaySample,
                     lastWeek: comparison.lastWeek.sample(for: selectedTodaySample.rub.globalRubIndex),
@@ -940,11 +1000,15 @@ private struct QuranStrengthDistributionCard: View {
                     }
                 }
 
+                if !isMultiSelectMode {
+                    filterChips
+                }
+
                 ForEach(juzRows, id: \.juzNumber) { row in
                     HStack(spacing: 8) {
                         Text("ج\(row.juzNumber)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(juzLabelColor(for: row))
                             .frame(width: 28, alignment: .leading)
 
                         HStack(spacing: 4) {
@@ -989,45 +1053,122 @@ private struct QuranStrengthDistributionCard: View {
         }
     }
 
+    private var statsSummaryBar: some View {
+        let avgScore = comparison.today.samples
+            .filter { $0.tier != .unmemorized }
+            .map(\.score)
+            .reduce(0, +) / Double(max(1, memorizedRubTotal))
+        let dueCount = comparison.today.samples.filter { $0.isDueToday && $0.tier != .unmemorized }.count
+        let weakCount = comparison.today.samples.filter { $0.tier == .fragile && $0.tier != .unmemorized }.count
+
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                QuranMiniStatPill(
+                    icon: "book.closed.fill",
+                    value: "\(memorizedRubTotal)",
+                    label: "ربع محفوظ",
+                    tint: AamalTheme.emerald
+                )
+                QuranMiniStatPill(
+                    icon: "chart.bar.fill",
+                    value: "\(Int(avgScore.rounded()))٪",
+                    label: "متوسط القوة",
+                    tint: AamalTheme.mint
+                )
+                QuranMiniStatPill(
+                    icon: "calendar.badge.clock",
+                    value: "\(dueCount)",
+                    label: "مطلوب اليوم",
+                    tint: AamalTheme.gold
+                )
+                QuranMiniStatPill(
+                    icon: "exclamationmark.triangle.fill",
+                    value: "\(weakCount)",
+                    label: "هشة",
+                    tint: AamalTheme.gold
+                )
+            }
+            .padding(.horizontal, 2)
+        }
+    }
+
+    private var filterChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                FilterChip(
+                    title: "الكل",
+                    isSelected: highlightFilter == nil,
+                    tint: AamalTheme.ink
+                ) {
+                    highlightFilter = nil
+                }
+
+                ForEach([QuranStrengthTier.fragile, .building, .anchored], id: \.self) { tier in
+                    FilterChip(
+                        title: tier.title,
+                        isSelected: highlightFilter == tier,
+                        tint: tier.tint
+                    ) {
+                        highlightFilter = (highlightFilter == tier) ? nil : tier
+                    }
+                }
+            }
+            .padding(.horizontal, 2)
+        }
+    }
+
+    private func juzLabelColor(for row: (juzNumber: Int, samples: [QuranRubStrengthSample])) -> Color {
+        let hasFragile = row.samples.contains { $0.tier == .fragile }
+        let hasBuilding = row.samples.contains { $0.tier == .building }
+        if hasFragile { return AamalTheme.gold }
+        if hasBuilding { return AamalTheme.mint }
+        return .secondary
+    }
+
     @ViewBuilder
     private func rubCell(for sample: QuranRubStrengthSample) -> some View {
         let isSelected = selectedRubIndices.contains(sample.rub.globalRubIndex)
         let isActive = sample.rub.globalRubIndex == activeRubIndex
+        let isDimmed = !isMultiSelectMode && highlightFilter != nil && sample.tier != highlightFilter
 
-        Button(action: { handleRubTap(sample) }) {
-            ZStack(alignment: .topTrailing) {
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(sample.tier.tint.opacity(cellOpacity(for: sample)))
-                    .frame(maxWidth: .infinity, minHeight: 14, maxHeight: 14)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 5)
-                            .stroke(
-                                isMultiSelectMode && isSelected
-                                    ? AamalTheme.emerald
-                                    : (isActive ? AamalTheme.ink.opacity(0.7) : sample.tier.tint.opacity(0.16)),
-                                lineWidth: (isMultiSelectMode && isSelected) || isActive ? 1.6 : 1
-                            )
-                    )
+        ZStack(alignment: .topTrailing) {
+            RoundedRectangle(cornerRadius: 5)
+                .fill(sample.tier.tint.opacity(isDimmed ? 0.08 : cellOpacity(for: sample)))
+                .frame(maxWidth: .infinity, minHeight: 14, maxHeight: 14)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5)
+                        .stroke(
+                            isMultiSelectMode && isSelected
+                                ? AamalTheme.emerald
+                                : (isActive && !isDimmed ? AamalTheme.ink.opacity(0.7) : sample.tier.tint.opacity(isDimmed ? 0.06 : 0.16)),
+                            lineWidth: (isMultiSelectMode && isSelected) || (isActive && !isDimmed) ? 1.6 : 1
+                        )
+                )
+                .scaleEffect(isDimmed ? 0.92 : 1.0)
 
-                if isMultiSelectMode && isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 8, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(1)
-                        .background(AamalTheme.emerald)
-                        .clipShape(Circle())
-                        .offset(x: 2, y: -2)
-                }
+            if isMultiSelectMode && isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 8, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(1)
+                    .background(AamalTheme.emerald)
+                    .clipShape(Circle())
+                    .offset(x: 2, y: -2)
             }
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(sample.rub.detailedTitle) - \(sample.tier.title) - \(Int(sample.score.rounded()))٪")
+        .contentShape(Rectangle())
+        .animation(.easeInOut(duration: 0.2), value: highlightFilter)
+        .onTapGesture { handleRubTap(sample) }
         .onLongPressGesture(minimumDuration: 0.4) {
             if !isMultiSelectMode {
                 isMultiSelectMode = true
                 selectedRubIndices.insert(sample.rub.globalRubIndex)
             }
         }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(sample.rub.detailedTitle) - \(sample.tier.title) - \(Int(sample.score.rounded()))٪")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { handleRubTap(sample) }
     }
 
     private func handleRubTap(_ sample: QuranRubStrengthSample) {
@@ -1037,6 +1178,7 @@ private struct QuranStrengthDistributionCard: View {
             } else {
                 selectedRubIndices.insert(sample.rub.globalRubIndex)
             }
+            selectedRubIndex = sample.rub.globalRubIndex
         } else {
             selectedRubIndex = sample.rub.globalRubIndex
         }
@@ -1505,6 +1647,92 @@ private struct QuranStrengthRubDetailCard: View {
     }
 }
 
+private struct QuranBatchEditPanel: View {
+    let selectedCount: Int
+    @ObservedObject var store: TaskStore
+    let selectedRubs: [QuranRubReference]
+    let onSave: () -> Void
+
+    @State private var draftScore: Double = 60
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("تعديل جماعي")
+                        .font(.headline)
+                    Text("\(selectedCount) ربع محدد — الدرجة تُطبق على كل المحدد")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                QuranStatusBadge(
+                    title: "\(selectedCount) ربع",
+                    systemImage: "checkmark.circle.fill",
+                    tint: AamalTheme.emerald
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("تعيين درجة يدوية")
+                        .font(.subheadline)
+                        .fontWeight(.semibold)
+                    Spacer()
+                    Text("\(Int(draftScore.rounded()))٪")
+                        .font(.subheadline)
+                        .foregroundColor(AamalTheme.emerald)
+                }
+
+                Slider(value: $draftScore, in: 0...100, step: 1)
+                    .tint(AamalTheme.emerald)
+
+                HStack(spacing: 8) {
+                    Button(action: { draftScore = 30 }) {
+                        Text("هش")
+                    }
+                    .buttonStyle(AamalChipButtonStyle(tint: AamalTheme.gold))
+
+                    Button(action: { draftScore = 60 }) {
+                        Text("قيد التثبيت")
+                    }
+                    .buttonStyle(AamalChipButtonStyle(tint: AamalTheme.mint))
+
+                    Button(action: { draftScore = 85 }) {
+                        Text("راسخ")
+                    }
+                    .buttonStyle(AamalChipButtonStyle(tint: AamalTheme.emerald))
+                }
+
+                HStack(spacing: 10) {
+                    Button(action: {
+                        store.batchSetQuranManualStrength(draftScore, for: selectedRubs)
+                        onSave()
+                    }) {
+                        Text("حفظ للجميع")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(AamalSecondaryButtonStyle(tint: AamalTheme.emerald))
+
+                    Button(action: {
+                        store.batchClearQuranManualStrength(for: selectedRubs)
+                        onSave()
+                    }) {
+                        Text("إزالة التعديل")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(AamalSecondaryButtonStyle(tint: AamalTheme.gold))
+                }
+            }
+        }
+        .padding(14)
+        .background(Color(.secondarySystemBackground))
+        .clipShape(RoundedRectangle(cornerRadius: 18))
+    }
+}
+
 private struct QuranWeakSpotsDashboardCard: View {
     let plan: QuranAdaptiveDailyPlan
     let weakRubs: [QuranRubReference]
@@ -1813,7 +2041,7 @@ private struct QuranPrayerAssignmentCard: View {
             if condensedSegments.isEmpty {
                 Text(assignment.capacityAyahs == 0
                     ? "هذه الصلاة غير مفعلة في سعة اليوم."
-                    : "لا يوجد مقطع مخصص هنا اليوم.")
+                    : "لا يوجد مقطع مخصص هنا اليوم، لكن يمكنك تسجيل المراجعة إذا راجعت بشكل مستقل.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             } else {
@@ -1848,7 +2076,9 @@ private struct QuranPrayerAssignmentCard: View {
                             .foregroundColor(.secondary)
                     }
                 }
+            }
 
+            if assignment.capacityAyahs > 0 {
                 Group {
                     if isLogged {
                         Button(action: { }) {
@@ -2199,5 +2429,149 @@ private func qiyamTint(for rank: QuranQiyamRank) -> Color {
         return AamalTheme.gold
     case .muqantir:
         return AamalTheme.ink
+    }
+}
+
+private struct CollapsibleSection<Content: View>: View {
+    let title: String
+    let subtitle: String
+    let systemImage: String
+    let tint: Color
+    @Binding var isExpanded: Bool
+    let content: Content
+
+    init(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        tint: Color,
+        isExpanded: Binding<Bool>,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.systemImage = systemImage
+        self.tint = tint
+        self._isExpanded = isExpanded
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                    isExpanded.toggle()
+                }
+            }) {
+                HStack(spacing: 12) {
+                    Image(systemName: systemImage)
+                        .font(.title3)
+                        .foregroundColor(tint)
+                        .frame(width: 28)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(title)
+                            .font(.headline)
+                            .foregroundColor(.primary)
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+
+                    Spacer()
+
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(8)
+                        .background(Circle().fill(Color(.tertiarySystemFill)))
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 14)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                content
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 16)
+                    .transition(.asymmetric(
+                        insertion: .opacity.combined(with: .move(edge: .top)),
+                        removal: .opacity.combined(with: .move(edge: .top))
+                    ))
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: AamalTheme.cardCornerRadius)
+                .fill(AamalTheme.cardBackground())
+                .overlay(
+                    RoundedRectangle(cornerRadius: AamalTheme.cardCornerRadius)
+                        .stroke(tint.opacity(0.12), lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct QuranMiniStatPill: View {
+    let icon: String
+    let value: String
+    let label: String
+    let tint: Color
+
+    var body: some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.caption2)
+                    .foregroundColor(tint)
+                Text(value)
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(.primary)
+            }
+            Text(label)
+                .font(.caption2)
+                .foregroundColor(.secondary)
+        }
+        .frame(minWidth: 72)
+        .padding(.vertical, 8)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(AamalTheme.tonalBackground(for: tint))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(tint.opacity(0.14), lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct FilterChip: View {
+    let title: String
+    let isSelected: Bool
+    let tint: Color
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption)
+                .fontWeight(isSelected ? .semibold : .regular)
+                .foregroundColor(isSelected ? .white : tint)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(
+                    Capsule()
+                        .fill(isSelected ? AnyShapeStyle(tint) : AnyShapeStyle(AamalTheme.tonalBackground(for: tint)))
+                        .overlay(
+                            Capsule()
+                                .stroke(tint.opacity(isSelected ? 0.3 : 0.14), lineWidth: 1)
+                        )
+                )
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 }
