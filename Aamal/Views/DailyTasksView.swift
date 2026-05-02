@@ -40,6 +40,12 @@ struct DailyTasksView: View {
     @State private var actionFeedback: TaskActionFeedback?
     @State private var feedbackDismissWorkItem: DispatchWorkItem?
 
+    private let contentHorizontalPadding: CGFloat = AamalTheme.sectionSpacing + 4
+    private let contentTopPadding: CGFloat = AamalTheme.contentSpacing + 2
+    private let contentBottomPadding: CGFloat = AamalTheme.screenBottomInset + AamalTheme.contentSpacing
+    private let cardStackSpacing: CGFloat = AamalTheme.screenSpacing + 4
+    private let topControlsBottomSpacing: CGFloat = AamalTheme.contentSpacing + 2
+
     private var isSelectedDateToday: Bool {
         Calendar.current.isDateInToday(selectedDate)
     }
@@ -134,7 +140,28 @@ struct DailyTasksView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: AamalTheme.screenSpacing) {
+                VStack(spacing: cardStackSpacing) {
+                    HStack(spacing: 12) {
+                        Button(action: { showAddTaskSheet = true }) {
+                            Image(systemName: "plus")
+                                .font(.title2.weight(.semibold))
+                                .frame(width: 56, height: 56)
+                        }
+                        .foregroundColor(AamalTheme.emerald)
+                        .background(
+                            Circle()
+                                .fill(AamalTheme.tonalBackground(for: AamalTheme.emerald))
+                                .overlay(
+                                    Circle()
+                                        .stroke(AamalTheme.emerald.opacity(0.18), lineWidth: 1)
+                                )
+                        )
+
+                        AamalSearchField(text: $searchText, prompt: "ابحث عن مهمة", tint: AamalTheme.gold)
+                    }
+                    .padding(.bottom, topControlsBottomSpacing)
+                    .aamalEntrance(0)
+
                     VStack(alignment: .leading, spacing: AamalTheme.contentSpacing) {
                         AamalSectionHeader(
                             title: "تسجيل أيام سابقة",
@@ -154,7 +181,7 @@ struct DailyTasksView: View {
                         }
                     }
                     .aamalCard()
-                    .aamalEntrance(0)
+                    .aamalEntrance(1)
 
                     VStack(alignment: .leading, spacing: AamalTheme.sectionSpacing) {
                         AamalSectionHeader(
@@ -190,7 +217,7 @@ struct DailyTasksView: View {
                         }
                     }
                     .aamalCard()
-                    .aamalEntrance(1)
+                    .aamalEntrance(2)
 
                     if filteredCategories.isEmpty {
                         Text("لا توجد مهام مطابقة لبحثك")
@@ -199,7 +226,7 @@ struct DailyTasksView: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.vertical, 24)
                             .aamalCard()
-                            .aamalEntrance(2)
+                            .aamalEntrance(3)
                     } else {
                         ForEach(Array(filteredCategories.enumerated()), id: \.element.name) { index, category in
                             CategorySectionView(
@@ -208,12 +235,13 @@ struct DailyTasksView: View {
                                 date: selectedDate,
                                 onTaskAction: presentFeedback
                             )
-                            .aamalEntrance(index + 2)
+                            .aamalEntrance(index + 3)
                         }
                     }
                 }
-                .padding(.horizontal, AamalTheme.sectionSpacing)
-                .padding(.bottom, AamalTheme.screenBottomInset)
+                .padding(.top, contentTopPadding)
+                .padding(.horizontal, contentHorizontalPadding)
+                .padding(.bottom, contentBottomPadding)
             }
             .safeAreaInset(edge: .bottom) {
                 if let actionFeedback {
@@ -227,16 +255,8 @@ struct DailyTasksView: View {
                     .transition(AamalTransition.banner)
                 }
             }
-            .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: { showAddTaskSheet = true }) {
-                        Image(systemName: "plus")
-                    }
-                }
-            }
             .navigationTitle("أعمال اليوم")
             .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, prompt: "ابحث عن مهمة")
             .aamalScreen()
             .animation(AamalMotion.banner, value: actionFeedback != nil)
             .sheet(isPresented: $showAddTaskSheet) {

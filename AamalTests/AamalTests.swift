@@ -324,6 +324,55 @@ struct AamalTests {
         #expect(rubOne.score > rubTwo.score)
     }
 
+    @Test func manualQuranStrengthOverrideChangesSnapshot() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let (store, _) = makeStore(defaults: defaults)
+        let referenceDate = Self.referenceDate
+
+        store.configureQuranRevisionPlan(
+            juzCount: 0,
+            additionalHizb: 0,
+            additionalRub: 1,
+            dailyGoalRubs: 1,
+            recentWindowRubs: 1,
+            newMemorizationTargetRubs: 0,
+            prayerCapacities: [.fajr: 8, .dhuhr: 8, .asr: 0, .maghrib: 0, .isha: 0]
+        )
+
+        let rub = QuranRubReference(globalRubIndex: 1)
+        #expect(store.setQuranManualStrength(82, for: rub))
+
+        let sample = try #require(store.quranStrengthComparison(on: referenceDate).today.sample(for: 1))
+        #expect(Int(sample.score.rounded()) == 82)
+        #expect(sample.manualOverrideScore == 82)
+        #expect(sample.weaknessReason == .manualStrengthOverride)
+    }
+
+    @Test func quranPrayerLoggingCompletesDayWhenAllActivePrayersAreLogged() throws {
+        let (defaults, suiteName) = try makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let (store, _) = makeStore(defaults: defaults)
+        let referenceDate = Self.referenceDate
+
+        store.configureQuranRevisionPlan(
+            juzCount: 0,
+            additionalHizb: 0,
+            additionalRub: 1,
+            dailyGoalRubs: 1,
+            recentWindowRubs: 1,
+            newMemorizationTargetRubs: 0,
+            prayerCapacities: [.fajr: 8, .dhuhr: 8, .asr: 0, .maghrib: 0, .isha: 0]
+        )
+
+        #expect(store.markQuranPrayerCompleted(.fajr, on: referenceDate))
+        #expect(store.isQuranPrayerCompleted(.fajr, on: referenceDate))
+        #expect(store.markQuranPrayerCompleted(.dhuhr, on: referenceDate))
+        #expect(store.isQuranRevisionCompleted(on: referenceDate))
+    }
+
     private static let referenceDate = Date(timeIntervalSince1970: 1_720_000_000)
 
     private func qiyamDate(offsetDays: Int) -> Date {

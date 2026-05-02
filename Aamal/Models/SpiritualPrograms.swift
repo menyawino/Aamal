@@ -292,6 +292,7 @@ enum QuranStrengthTier: CaseIterable, Hashable {
 
 enum QuranStrengthWeaknessReason: String, Hashable {
     case manualWeak
+    case manualStrengthOverride
     case dueToday
     case overdue
     case lowStability
@@ -303,6 +304,8 @@ enum QuranStrengthWeaknessReason: String, Hashable {
         switch self {
         case .manualWeak:
             return "موسوم يدويًا"
+        case .manualStrengthOverride:
+            return "درجة مضبوطة يدويًا"
         case .dueToday:
             return "بلغ حد المراجعة اليوم"
         case .overdue:
@@ -332,6 +335,7 @@ struct QuranRubStrengthSample: Identifiable, Hashable {
     let isDueToday: Bool
     let isInRecoveryToday: Bool
     let isManuallyWeak: Bool
+    let manualOverrideScore: Double?
 
     var id: Int { rub.globalRubIndex }
 }
@@ -358,6 +362,20 @@ struct QuranStrengthDistributionComparison: Hashable {
     }
 }
 
+struct QuranRubStrengthOverride: Codable, Hashable, Identifiable {
+    let rubIndex: Int
+    var score: Double
+
+    var id: Int { rubIndex }
+}
+
+struct QuranPrayerCompletionLog: Codable, Hashable, Identifiable {
+    let date: Date
+    var prayerRawValues: [String]
+
+    var id: Date { date }
+}
+
 struct QuranRevisionPlan: Codable {
     var totalMemorizedRubs: Int
     var dailyGoalRubs: Int
@@ -366,7 +384,9 @@ struct QuranRevisionPlan: Codable {
     var qiyamEnabled: Bool
     var qiyamSessions: [QiyamSession]
     var weakRubIndices: [Int]
+    var manualStrengthOverrides: [QuranRubStrengthOverride]
     var prayerCapacities: [String: Int]
+    var prayerCompletionLogs: [QuranPrayerCompletionLog]
     var startDate: Date
     var completedDates: [Date]
     var lastCompletionDate: Date?
@@ -380,7 +400,9 @@ struct QuranRevisionPlan: Codable {
         case qiyamEnabled
         case qiyamSessions
         case weakRubIndices
+        case manualStrengthOverrides
         case prayerCapacities
+        case prayerCompletionLogs
         case startDate
         case completedDates
         case lastCompletionDate
@@ -403,7 +425,9 @@ struct QuranRevisionPlan: Codable {
         qiyamEnabled: Bool = true,
         qiyamSessions: [QiyamSession] = [],
         weakRubIndices: [Int] = [],
+        manualStrengthOverrides: [QuranRubStrengthOverride] = [],
         prayerCapacities: [String: Int] = QuranRevisionPlan.defaultPrayerCapacities,
+        prayerCompletionLogs: [QuranPrayerCompletionLog] = [],
         startDate: Date = Date(),
         completedDates: [Date] = [],
         lastCompletionDate: Date? = nil,
@@ -416,7 +440,9 @@ struct QuranRevisionPlan: Codable {
         self.qiyamEnabled = qiyamEnabled
         self.qiyamSessions = qiyamSessions
         self.weakRubIndices = weakRubIndices
+        self.manualStrengthOverrides = manualStrengthOverrides
         self.prayerCapacities = prayerCapacities
+        self.prayerCompletionLogs = prayerCompletionLogs
         self.startDate = startDate
         self.completedDates = completedDates
         self.lastCompletionDate = lastCompletionDate
@@ -434,8 +460,10 @@ struct QuranRevisionPlan: Codable {
         qiyamEnabled = try container.decodeIfPresent(Bool.self, forKey: .qiyamEnabled) ?? true
         qiyamSessions = try container.decodeIfPresent([QiyamSession].self, forKey: .qiyamSessions) ?? []
         weakRubIndices = try container.decodeIfPresent([Int].self, forKey: .weakRubIndices) ?? []
+        manualStrengthOverrides = try container.decodeIfPresent([QuranRubStrengthOverride].self, forKey: .manualStrengthOverrides) ?? []
         prayerCapacities = try container.decodeIfPresent([String: Int].self, forKey: .prayerCapacities)
             ?? Self.defaultPrayerCapacities
+        prayerCompletionLogs = try container.decodeIfPresent([QuranPrayerCompletionLog].self, forKey: .prayerCompletionLogs) ?? []
         startDate = try container.decodeIfPresent(Date.self, forKey: .startDate) ?? Date()
         completedDates = try container.decodeIfPresent([Date].self, forKey: .completedDates) ?? []
         lastCompletionDate = try container.decodeIfPresent(Date.self, forKey: .lastCompletionDate)
@@ -452,7 +480,9 @@ struct QuranRevisionPlan: Codable {
         try container.encode(qiyamEnabled, forKey: .qiyamEnabled)
         try container.encode(qiyamSessions, forKey: .qiyamSessions)
         try container.encode(weakRubIndices, forKey: .weakRubIndices)
+        try container.encode(manualStrengthOverrides, forKey: .manualStrengthOverrides)
         try container.encode(prayerCapacities, forKey: .prayerCapacities)
+        try container.encode(prayerCompletionLogs, forKey: .prayerCompletionLogs)
         try container.encode(startDate, forKey: .startDate)
         try container.encode(completedDates, forKey: .completedDates)
         try container.encodeIfPresent(lastCompletionDate, forKey: .lastCompletionDate)
@@ -466,7 +496,9 @@ struct QuranRevisionPlan: Codable {
         newMemorizationTargetRubs = min(max(0, newMemorizationTargetRubs), totalMemorizedRubs >= 240 ? 0 : 2)
         qiyamSessions = Self.normalizedQiyamSessions(from: qiyamSessions)
         weakRubIndices = Self.normalizedWeakRubIndices(from: weakRubIndices, totalMemorizedRubs: totalMemorizedRubs)
+        manualStrengthOverrides = Self.normalizedStrengthOverrides(from: manualStrengthOverrides, totalMemorizedRubs: totalMemorizedRubs)
         prayerCapacities = Self.normalizedPrayerCapacities(from: prayerCapacities)
+        prayerCompletionLogs = Self.normalizedPrayerCompletionLogs(from: prayerCompletionLogs)
         completedDates = Array(Set(completedDates.map { Calendar.current.startOfDay(for: $0) })).sorted()
         if let lastCompletionDate {
             self.lastCompletionDate = Calendar.current.startOfDay(for: lastCompletionDate)
@@ -488,6 +520,12 @@ struct QuranRevisionPlan: Codable {
     func qiyamSession(on date: Date) -> QiyamSession? {
         let dayKey = Calendar.current.startOfDay(for: date)
         return qiyamSessions.first { $0.date == dayKey }
+    }
+
+    func completedPrayers(on date: Date) -> Set<PrayerCompensationType> {
+        let dayKey = Calendar.current.startOfDay(for: date)
+        guard let log = prayerCompletionLogs.first(where: { $0.date == dayKey }) else { return [] }
+        return Set(log.prayerRawValues.compactMap(PrayerCompensationType.init(rawValue:)))
     }
 
     private static func defaultRecentWindow(for totalMemorizedRubs: Int) -> Int {
@@ -549,6 +587,38 @@ struct QuranRevisionPlan: Codable {
         }
 
         return normalized
+    }
+
+    private static func normalizedStrengthOverrides(from values: [QuranRubStrengthOverride], totalMemorizedRubs: Int) -> [QuranRubStrengthOverride] {
+        guard totalMemorizedRubs > 0 else { return [] }
+
+        var normalized: [QuranRubStrengthOverride] = []
+        var seen: Set<Int> = []
+
+        for value in values {
+            guard (1...totalMemorizedRubs).contains(value.rubIndex), !seen.contains(value.rubIndex) else {
+                continue
+            }
+
+            normalized.append(QuranRubStrengthOverride(rubIndex: value.rubIndex, score: min(max(value.score, 0), 100)))
+            seen.insert(value.rubIndex)
+        }
+
+        return normalized.sorted { $0.rubIndex < $1.rubIndex }
+    }
+
+    private static func normalizedPrayerCompletionLogs(from values: [QuranPrayerCompletionLog]) -> [QuranPrayerCompletionLog] {
+        var grouped: [Date: Set<String>] = [:]
+
+        for value in values {
+            let dayKey = Calendar.current.startOfDay(for: value.date)
+            let prayerValues = value.prayerRawValues.filter { PrayerCompensationType(rawValue: $0) != nil }
+            grouped[dayKey, default: []].formUnion(prayerValues)
+        }
+
+        return grouped.keys.sorted().map { date in
+            QuranPrayerCompletionLog(date: date, prayerRawValues: grouped[date, default: []].sorted())
+        }
     }
 }
 

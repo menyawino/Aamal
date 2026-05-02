@@ -618,7 +618,9 @@ final class TaskStore: ObservableObject {
             qiyamEnabled: qiyamEnabled ?? quranRevisionPlan.qiyamEnabled,
             qiyamSessions: quranRevisionPlan.qiyamSessions,
             weakRubIndices: quranRevisionPlan.weakRubIndices.filter { $0 <= totalRubs },
+            manualStrengthOverrides: quranRevisionPlan.manualStrengthOverrides.filter { $0.rubIndex <= totalRubs },
             prayerCapacities: normalizedCapacities,
+            prayerCompletionLogs: preservesProgress ? quranRevisionPlan.prayerCompletionLogs : [],
             startDate: preservesProgress ? quranRevisionPlan.startDate : Date(),
             completedDates: preservesProgress ? quranRevisionPlan.completedDates : [],
             lastCompletionDate: preservesProgress ? quranRevisionPlan.lastCompletionDate : nil,
@@ -738,6 +740,9 @@ final class TaskStore: ObservableObject {
                     .map(\.globalRubIndex)
             )
             let manualWeakIDs = includeCurrentManualWeakFlags ? Set(quranRevisionPlan.weakRubIndices) : []
+            let manualOverrideScores = includeCurrentManualWeakFlags
+                ? Dictionary(uniqueKeysWithValues: quranRevisionPlan.manualStrengthOverrides.map { ($0.rubIndex, $0.score) })
+                : [:]
 
             let samples = (1...240).map { rubIndex in
                 let rub = QuranRubReference(globalRubIndex: rubIndex)
@@ -755,7 +760,8 @@ final class TaskStore: ObservableObject {
                         weaknessDetail: "هذا الربع ليس ضمن مقدار المحفوظ الحالي بعد.",
                         isDueToday: false,
                         isInRecoveryToday: false,
-                        isManuallyWeak: false
+                        isManuallyWeak: false,
+                        manualOverrideScore: nil
                     )
                 }
 
@@ -767,24 +773,34 @@ final class TaskStore: ObservableObject {
                 let isDueToday = dueIDs.contains(rubIndex)
                 let isInRecoveryToday = recoveryIDs.contains(rubIndex)
                 let isManuallyWeak = manualWeakIDs.contains(rubIndex)
+                let manualOverrideScore = manualOverrideScores[rubIndex]
                 let adjustedScore = adjustedQuranStrengthScore(
                     baseScore: computation.score,
                     isInRecoveryToday: isInRecoveryToday,
                     isManuallyWeak: isManuallyWeak
                 )
-                let tier = quranStrengthTier(for: adjustedScore)
-                let weakness = quranWeaknessAssessment(
-                    for: rubIndex,
-                    computation: computation,
-                    isDueToday: isDueToday,
-                    isInRecoveryToday: isInRecoveryToday,
-                    isManuallyWeak: isManuallyWeak,
-                    referenceDate: dayKey
-                )
+                let finalScore = manualOverrideScore ?? adjustedScore
+                let tier = quranStrengthTier(for: finalScore)
+                let weakness: (reason: QuranStrengthWeaknessReason, detail: String)
+                if let manualOverrideScore {
+                    weakness = (
+                        .manualStrengthOverride,
+                        "ضبطت يدويًا درجة هذا الربع إلى \(Int(manualOverrideScore.rounded()))٪ لتطابق تقديرك الحالي للحفظ."
+                    )
+                } else {
+                    weakness = quranWeaknessAssessment(
+                        for: rubIndex,
+                        computation: computation,
+                        isDueToday: isDueToday,
+                        isInRecoveryToday: isInRecoveryToday,
+                        isManuallyWeak: isManuallyWeak,
+                        referenceDate: dayKey
+                    )
+                }
 
                 return QuranRubStrengthSample(
                     rub: rub,
-                    score: adjustedScore,
+                    score: finalScore,
                     retrievability: computation.retrievability,
                     stabilityDays: computation.stabilityDays,
                     reviewCount: computation.reviewCount,
@@ -794,7 +810,8 @@ final class TaskStore: ObservableObject {
                     weaknessDetail: weakness.detail,
                     isDueToday: isDueToday,
                     isInRecoveryToday: isInRecoveryToday,
-                    isManuallyWeak: isManuallyWeak
+                    isManuallyWeak: isManuallyWeak,
+                    manualOverrideScore: manualOverrideScore
                 )
             }
 
@@ -1040,6 +1057,132 @@ final class TaskStore: ObservableObject {
         awardQuranRevisionBadgesIfNeeded()
         recordProgressSnapshot(for: dayKey)
         return true
+    }
+
+    func isQuranPrayerCompleted(_ prayer: PrayerCompensationType, on date: Date = Date()) -> Bool {
+        quranRevisionPlan.completedPrayers(on: date).contains(prayer)
+    }
+
+    func completedQuranPrayers(on date: Date = Date()) -> Set<PrayerCompensationType> {
+        quranRevisionPlan.completedPrayers(on: date)
+    }
+
+    @discardableResult
+    func markQuranPrayerCompleted(_ prayer: PrayerCompensationType, on date: Date = Date()) -> Bool {
+        guard quranRevisionPlan.totalMemorizedRubs > 0 else { return false }
+        let dayKey = dateKey(date)
+        let activePrayers = Set(
+            adaptiveQuranPlan(for: dayKey)
+                .prayerAssignments
+                .filter { $0.assignedAyahs > 0 && !$0.segments.isEmpty }
+                .map(\ .prayer)
+        )
+        guard activePrayers.contains(prayer) else { return false }
+
+        var logs = quranRevisionPlan.prayerCompletionLogs
+        if let index = logs.firstIndex(where: { $0.date == dayKey }) {
+            var prayers = Set(logs[index].prayerRawValues)
+            guard !prayers.contains(prayer.rawValue) else { return false }
+            prayers.insert(prayer.rawValue)
+            logs[index].prayerRawValues = prayers.sorted()
+        } else {
+            logs.append(QuranPrayerCompletionLog(date: dayKey, prayerRawValues: [prayer.rawValue]))
+            logs.sort { $0.date < $1.date }
+        }
+
+        quranRevisionPlan.prayerCompletionLogs = logs
+
+        let completedPrayers = quranRevisionPlan.completedPrayers(on: dayKey)
+        if !activePrayers.isEmpty, activePrayers.isSubset(of: completedPrayers) {
+            return markQuranRevisionCompleted(on: dayKey)
+        }
+
+        saveData()
+        return true
+    }
+
+    func quranManualStrengthOverride(for rub: QuranRubReference) -> Double? {
+        quranRevisionPlan.manualStrengthOverrides.first { $0.rubIndex == rub.globalRubIndex }?.score
+    }
+
+    @discardableResult
+    func setQuranManualStrength(_ score: Double, for rub: QuranRubReference) -> Bool {
+        guard (1...quranRevisionPlan.totalMemorizedRubs).contains(rub.globalRubIndex) else { return false }
+
+        let normalizedScore = min(max(score, 0), 100)
+        if let index = quranRevisionPlan.manualStrengthOverrides.firstIndex(where: { $0.rubIndex == rub.globalRubIndex }) {
+            quranRevisionPlan.manualStrengthOverrides[index].score = normalizedScore
+        } else {
+            quranRevisionPlan.manualStrengthOverrides.append(QuranRubStrengthOverride(rubIndex: rub.globalRubIndex, score: normalizedScore))
+            quranRevisionPlan.manualStrengthOverrides.sort { $0.rubIndex < $1.rubIndex }
+        }
+
+        saveData()
+        return true
+    }
+
+    @discardableResult
+    func clearQuranManualStrength(_ rub: QuranRubReference) -> Bool {
+        let previousCount = quranRevisionPlan.manualStrengthOverrides.count
+        quranRevisionPlan.manualStrengthOverrides.removeAll { $0.rubIndex == rub.globalRubIndex }
+        let changed = quranRevisionPlan.manualStrengthOverrides.count != previousCount
+        if changed {
+            saveData()
+        }
+        return changed
+    }
+
+    func batchSetQuranManualStrength(_ score: Double, for rubs: [QuranRubReference]) {
+        let normalizedScore = min(max(score, 0), 100)
+        var changed = false
+        for rub in rubs {
+            guard (1...quranRevisionPlan.totalMemorizedRubs).contains(rub.globalRubIndex) else { continue }
+            if let index = quranRevisionPlan.manualStrengthOverrides.firstIndex(where: { $0.rubIndex == rub.globalRubIndex }) {
+                if quranRevisionPlan.manualStrengthOverrides[index].score != normalizedScore {
+                    quranRevisionPlan.manualStrengthOverrides[index].score = normalizedScore
+                    changed = true
+                }
+            } else {
+                quranRevisionPlan.manualStrengthOverrides.append(QuranRubStrengthOverride(rubIndex: rub.globalRubIndex, score: normalizedScore))
+                changed = true
+            }
+        }
+        if changed {
+            quranRevisionPlan.manualStrengthOverrides.sort { $0.rubIndex < $1.rubIndex }
+            saveData()
+        }
+    }
+
+    func batchClearQuranManualStrength(for rubs: [QuranRubReference]) {
+        let previousCount = quranRevisionPlan.manualStrengthOverrides.count
+        let indicesToRemove = Set(rubs.map(\.globalRubIndex))
+        quranRevisionPlan.manualStrengthOverrides.removeAll { indicesToRemove.contains($0.rubIndex) }
+        if quranRevisionPlan.manualStrengthOverrides.count != previousCount {
+            saveData()
+        }
+    }
+
+    func batchMarkQuranRubWeak(_ rubs: [QuranRubReference]) {
+        var changed = false
+        for rub in rubs {
+            guard (1...quranRevisionPlan.totalMemorizedRubs).contains(rub.globalRubIndex) else { continue }
+            if !quranRevisionPlan.weakRubIndices.contains(rub.globalRubIndex) {
+                quranRevisionPlan.weakRubIndices.insert(rub.globalRubIndex, at: 0)
+                changed = true
+            }
+        }
+        if changed {
+            saveData()
+        }
+    }
+
+    func batchClearQuranRubWeak(for rubs: [QuranRubReference]) {
+        let previousCount = quranRevisionPlan.weakRubIndices.count
+        let indicesToRemove = Set(rubs.map(\.globalRubIndex))
+        quranRevisionPlan.weakRubIndices.removeAll { indicesToRemove.contains($0) }
+        if quranRevisionPlan.weakRubIndices.count != previousCount {
+            saveData()
+        }
     }
 
     func isQuranRubMarkedWeak(_ rub: QuranRubReference) -> Bool {

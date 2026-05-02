@@ -7,6 +7,11 @@ struct GamifiedHomeView: View {
     @StateObject private var locationManager = LocationManager()
     @StateObject private var prayerViewModel: PrayerTimesViewModel
 
+    private let contentHorizontalPadding: CGFloat = AamalTheme.sectionSpacing + 4
+    private let contentTopPadding: CGFloat = AamalTheme.contentSpacing + 2
+    private let contentBottomPadding: CGFloat = AamalTheme.screenBottomInset + AamalTheme.contentSpacing
+    private let cardStackSpacing: CGFloat = AamalTheme.screenSpacing + 4
+
     init(store: TaskStore) {
         self.store = store
         _prayerViewModel = StateObject(wrappedValue: PrayerTimesViewModel(store: store))
@@ -23,7 +28,7 @@ struct GamifiedHomeView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: AamalTheme.screenSpacing) {
+                VStack(spacing: cardStackSpacing) {
                     HeroProgressCard(store: store)
                         .aamalEntrance(0)
                     HomeTodayStatusCard(
@@ -52,8 +57,9 @@ struct GamifiedHomeView: View {
                         }
                     }
                 }
-                .padding(.horizontal, AamalTheme.sectionSpacing)
-                .padding(.bottom, AamalTheme.screenBottomInset)
+                .padding(.top, contentTopPadding)
+                .padding(.horizontal, contentHorizontalPadding)
+                .padding(.bottom, contentBottomPadding)
             }
             .refreshable {
                 refreshPrayerTimes(force: true)

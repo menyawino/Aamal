@@ -27,7 +27,15 @@ struct ScoreView: View {
     @State private var selectedRange: ChartRange = .week
 
     private var chartData: [ProgressPoint] {
-        store.completionSeries(days: selectedRange.days)
+        taskCompletionSeries(days: selectedRange.days)
+    }
+
+    private var weeklyCompletionRate: Double {
+        taskCompletionRate(days: ChartRange.week.days)
+    }
+
+    private var monthlyCompletionRate: Double {
+        taskCompletionRate(days: ChartRange.month.days)
     }
 
     private var averageValue: Double {
@@ -52,7 +60,7 @@ struct ScoreView: View {
     private var momentumScore: Int {
         let streakFactor = min(Double(store.streak) / 14, 1)
         let badgeFactor = min(Double(store.badges.count) / 8, 1)
-        let score = (store.weeklyCompletionRate * 0.45) + (streakFactor * 0.35) + (badgeFactor * 0.20)
+        let score = (weeklyCompletionRate * 0.45) + (streakFactor * 0.35) + (badgeFactor * 0.20)
         return Int((score * 100).rounded())
     }
 
@@ -87,9 +95,12 @@ struct ScoreView: View {
 
                     AnalyticsCard(
                         store: store,
+                        weeklyCompletionRate: weeklyCompletionRate,
+                        monthlyCompletionRate: monthlyCompletionRate,
                         averageValue: averageValue,
                         bestValue: bestValue,
-                        rangeDays: selectedRange.days
+                        rangeDays: selectedRange.days,
+                        consistency: taskConsistencyRate(days: selectedRange.days)
                     )
                     .aamalEntrance(3)
 
@@ -114,6 +125,35 @@ struct ScoreView: View {
             .navigationBarTitleDisplayMode(.inline)
             .aamalScreen()
         }
+    }
+
+    private func taskCompletionSeries(days: Int) -> [ProgressPoint] {
+        guard days > 0 else { return [] }
+
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        return (0..<days).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: -(days - 1 - offset), to: today) else {
+                return nil
+            }
+
+            return ProgressPoint(date: date, value: store.completion(for: store.categories, on: date))
+        }
+    }
+
+    private func taskCompletionRate(days: Int) -> Double {
+        let series = taskCompletionSeries(days: days)
+        guard !series.isEmpty else { return 0 }
+        let total = series.map(\.value).reduce(0, +)
+        return total / Double(series.count)
+    }
+
+    private func taskConsistencyRate(days: Int, minimumDailyCompletion: Double = 0.6) -> Double {
+        let series = taskCompletionSeries(days: days)
+        guard !series.isEmpty else { return 0 }
+        let consistentDays = series.filter { $0.value >= minimumDailyCompletion }.count
+        return Double(consistentDays) / Double(series.count)
     }
 }
 
@@ -353,9 +393,12 @@ private struct ProgressChartCard: View {
 
 private struct AnalyticsCard: View {
     @ObservedObject var store: TaskStore
+    let weeklyCompletionRate: Double
+    let monthlyCompletionRate: Double
     let averageValue: Double
     let bestValue: Double
     let rangeDays: Int
+    let consistency: Double
 
     private var showsProgramProgress: Bool {
         store.totalCompensationDebtUnits > 0 || store.quranRevisionPlan.totalMemorizedRubs > 0
@@ -377,18 +420,14 @@ private struct AnalyticsCard: View {
         store.strongestWeekdayInsight(days: rangeDays)
     }
 
-    private var consistency: Double {
-        store.consistencyRate(days: rangeDays)
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("تحليلات الإنجاز")
                 .font(.headline)
 
             HStack {
-                metricView(title: "آخر 7 أيام", value: store.weeklyCompletionRate)
-                metricView(title: "آخر 30 يوم", value: store.monthlyCompletionRate)
+                metricView(title: "آخر 7 أيام", value: weeklyCompletionRate)
+                metricView(title: "آخر 30 يوم", value: monthlyCompletionRate)
             }
 
             HStack {

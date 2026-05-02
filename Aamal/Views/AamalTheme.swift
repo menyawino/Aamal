@@ -149,6 +149,43 @@ enum AamalStatPillAlignment {
     case center
 }
 
+struct AamalSearchField: View {
+    @Binding var text: String
+    let prompt: String
+    var tint: Color = AamalTheme.emerald
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass")
+                .font(.subheadline.weight(.semibold))
+                .foregroundColor(tint)
+
+            TextField(prompt, text: $text)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+
+            if !text.isEmpty {
+                Button(action: { text = "" }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 20)
+                .fill(AamalTheme.cardBackground())
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(tint.opacity(0.14), lineWidth: 1)
+                )
+        )
+    }
+}
+
 struct AamalSectionHeader: View {
     let title: String
     var subtitle: String? = nil
