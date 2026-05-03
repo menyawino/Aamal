@@ -86,6 +86,9 @@ struct ScoreView: View {
                     ProgressChartCard(data: chartData, range: selectedRange, selectedRange: $selectedRange)
                         .aamalEntrance(1)
 
+                    QuranProgressChartCard(store: store, range: selectedRange)
+                        .aamalEntrance(2)
+
                     QuestMilestonesCard(
                         store: store,
                         nextStreakMilestone: nextStreakMilestone,
@@ -372,6 +375,76 @@ private struct ProgressChartCard: View {
                         y: .value("الإنجاز", point.value * 100)
                     )
                     .foregroundStyle(AamalTheme.gold)
+                }
+                .chartYScale(domain: 0...100)
+                .chartYAxis {
+                    AxisMarks(position: .leading)
+                }
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .day, count: range == .week ? 1 : 5)) { _ in
+                        AxisGridLine()
+                        AxisTick()
+                        AxisValueLabel(format: .dateTime.day().month(.abbreviated))
+                    }
+                }
+                .frame(height: 210)
+            }
+        }
+        .aamalCard()
+    }
+}
+
+private struct QuranProgressChartCard: View {
+    @ObservedObject var store: TaskStore
+    let range: ChartRange
+
+    private var data: [ProgressPoint] {
+        store.quranCompletionSeries(days: range.days)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("منحنى مراجعة القرآن")
+                    .font(.headline)
+                Spacer()
+                if let last = data.last {
+                    Text("\(Int((last.value * 100).rounded()))٪")
+                        .font(.subheadline)
+                        .foregroundColor(AamalTheme.emerald)
+                }
+            }
+
+            if data.isEmpty {
+                Text("لا توجد بيانات كافية للرسم البياني")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+            } else {
+                Chart(data) { point in
+                    AreaMark(
+                        x: .value("اليوم", point.date),
+                        y: .value("الإنجاز", point.value * 100)
+                    )
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [AamalTheme.gold.opacity(0.35), AamalTheme.gold.opacity(0.05)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+
+                    LineMark(
+                        x: .value("اليوم", point.date),
+                        y: .value("الإنجاز", point.value * 100)
+                    )
+                    .foregroundStyle(AamalTheme.gold)
+                    .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+
+                    PointMark(
+                        x: .value("اليوم", point.date),
+                        y: .value("الإنجاز", point.value * 100)
+                    )
+                    .foregroundStyle(AamalTheme.emerald)
                 }
                 .chartYScale(domain: 0...100)
                 .chartYAxis {

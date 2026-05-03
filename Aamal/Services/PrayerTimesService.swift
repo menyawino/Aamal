@@ -98,11 +98,11 @@ final class PrayerTimesService {
     }
 
     func fetchTimings(latitude: Double, longitude: Double, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
-        fetchTimingsFromEgyptianSurvey(governorate: "القاهرة", completion: completion)
+        fetchTimingsWithMethods(latitude: latitude, longitude: longitude, methods: [2, 3, 4, 5], index: 0, completion: completion)
     }
 
     func fetchTimingsWithFallback(latitude: Double, longitude: Double, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
-        fetchTimingsFromEgyptianSurvey(governorate: "القاهرة", completion: completion)
+        fetchTimingsWithMethods(latitude: latitude, longitude: longitude, methods: [2, 3, 4, 5], index: 0, completion: completion)
     }
 
     private func fetchTimings(latitude: Double, longitude: Double, method: Int, completion: @escaping (Result<PrayerTimings, Error>) -> Void) {
@@ -436,7 +436,7 @@ final class PrayerTimesService {
         }.resume()
     }
 
-    private func timeFrom(_ timeString: String, timeZone: TimeZone, calendar: Calendar) throws -> Date {
+    private func timeFrom(_ timeString: String, timeZone: TimeZone, calendar: Calendar, targetDate: Date = Date()) throws -> Date {
         let cleaned = timeString.components(separatedBy: " ").first ?? timeString
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm"
@@ -449,7 +449,7 @@ final class PrayerTimesService {
         var calendar = calendar
         calendar.timeZone = timeZone
 
-        var components = calendar.dateComponents([.year, .month, .day], from: Date())
+        var components = calendar.dateComponents([.year, .month, .day], from: targetDate)
         let timeComponents = calendar.dateComponents([.hour, .minute], from: parsedTime)
         components.hour = timeComponents.hour
         components.minute = timeComponents.minute

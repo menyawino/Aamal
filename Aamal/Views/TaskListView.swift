@@ -2,16 +2,12 @@ import SwiftUI
 import UserNotifications
 
 struct TaskListView: View {
-    @State private var tasks: [Task] = TaskListView.seededTasks
-
-    private static var seededTasks: [Task] {
-        dailyCategory.subCategories?.flatMap(\.tasks) ?? []
-    }
+    @ObservedObject var store: TaskStore
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach($tasks) { $task in
+                ForEach(Array(store.allTasks.enumerated()), id: \.element.id) { _, task in
                     HStack {
                         VStack(alignment: .leading) {
                             Text(task.name)
@@ -26,15 +22,10 @@ struct TaskListView: View {
                         }
                         Spacer()
                         Button(action: {
-                            task.toggleCompletion()
-                            if task.isCompleted {
-                                task.upgradeLevel()
-                                task.assignBadge("نجم متميز")
-                                scheduleNotification(for: task.name)
-                            }
+                            store.toggleTask(taskId: task.id, on: Date())
                         }) {
-                            Image(systemName: task.isCompleted ? "checkmark.circle.fill" : "circle")
-                                .foregroundColor(task.isCompleted ? AamalTheme.emerald : .secondary)
+                            Image(systemName: store.isTaskCompleted(task, on: Date()) ? "checkmark.circle.fill" : "circle")
+                                .foregroundColor(store.isTaskCompleted(task, on: Date()) ? AamalTheme.emerald : .secondary)
                         }
                     }
                 }
@@ -42,23 +33,6 @@ struct TaskListView: View {
             .scrollContentBackground(.hidden)
             .background(AamalTheme.backgroundGradient.ignoresSafeArea())
             .navigationTitle("المهام")
-        }
-    }
-
-    func scheduleNotification(for taskName: String) {
-        let center = UNUserNotificationCenter.current()
-        let content = UNMutableNotificationContent()
-        content.title = "تمت المهمة"
-        content.body = "أكملت \(taskName). أحسنت!"
-        content.sound = .default
-
-        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: 5, repeats: false)
-        let request = UNNotificationRequest(identifier: "taskCompletion_\(taskName)", content: content, trigger: trigger)
-
-        center.add(request) { error in
-            if let error = error {
-                print("Error scheduling notification: \(error.localizedDescription)")
-            }
         }
     }
 }

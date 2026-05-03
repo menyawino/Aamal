@@ -4,6 +4,7 @@ import UIKit
 
 struct GamifiedHomeView: View {
     @ObservedObject var store: TaskStore
+    @Binding var selectedTab: Int
     @StateObject private var locationManager = LocationManager()
     @StateObject private var prayerViewModel: PrayerTimesViewModel
 
@@ -12,8 +13,9 @@ struct GamifiedHomeView: View {
     private let contentBottomPadding: CGFloat = AamalTheme.screenBottomInset + AamalTheme.contentSpacing
     private let cardStackSpacing: CGFloat = AamalTheme.screenSpacing + 4
 
-    init(store: TaskStore) {
+    init(store: TaskStore, selectedTab: Binding<Int>) {
         self.store = store
+        self._selectedTab = selectedTab
         _prayerViewModel = StateObject(wrappedValue: PrayerTimesViewModel(store: store))
     }
 
@@ -45,6 +47,12 @@ struct GamifiedHomeView: View {
                         .aamalEntrance(3)
                     QuickLogSection(store: store, onlyNonPrayer: true, allowedPrayer: nextPrayerSlot?.arabicName)
                         .aamalEntrance(4)
+
+                    HomeQuranStatusCard(store: store, onTap: { selectedTab = 4 })
+                        .aamalEntrance(5)
+
+                    HomeQiyamStatusCard(store: store, onTap: { selectedTab = 5 })
+                        .aamalEntrance(6)
 
                     ForEach(Array(store.categories.enumerated()), id: \.element.name) { index, category in
                         if category.name == "مهام الجمعة" && !isFriday() {
@@ -91,15 +99,17 @@ struct GamifiedHomeView: View {
     }
 
     private func refreshPrayerTimes(force: Bool) {
-        locationManager.requestLocation()
-        guard let location = locationManager.location else { return }
-        prayerViewModel.refresh(
-            latitude: location.coordinate.latitude,
-            longitude: location.coordinate.longitude,
-            fallbackCity: locationManager.city,
-            fallbackCountry: locationManager.country,
-            force: force
-        )
+        if let location = locationManager.location {
+            prayerViewModel.refresh(
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude,
+                fallbackCity: locationManager.city,
+                fallbackCountry: locationManager.country,
+                force: force
+            )
+        } else {
+            locationManager.requestLocation()
+        }
     }
 
     private var nextPrayerSlot: PrayerSlot? {
@@ -662,5 +672,152 @@ private struct TaskRow: View {
 
         }
         .padding(.vertical, 4)
+    }
+}
+
+private struct HomeQuranStatusCard: View {
+    @ObservedObject var store: TaskStore
+    let onTap: () -> Void
+
+    private var plan: QuranAdaptiveDailyPlan {
+        store.todaysAdaptiveQuranPlan
+    }
+
+    private var isCompleted: Bool {
+        let today = Calendar.current.startOfDay(for: Date())
+        return store.quranRevisionPlan.completedDates.contains(today)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AamalTheme.contentSpacing) {
+            HStack {
+                AamalSectionHeader(
+                    title: "مراجعة المحفوظ",
+                    subtitle: isCompleted ? "تمت مراجعة اليوم" : "خطة اليوم: \(plan.requiredRevision.count) أرباع",
+                    tint: AamalTheme.emerald,
+                    systemImage: "book.fill"
+                )
+                Spacer()
+                Image(systemName: "chevron.left")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            if !plan.requiredRevision.isEmpty {
+                HStack(spacing: 10) {
+                    AamalStatPill(
+                        title: "الأرباع المطلوبة",
+                        value: "\(plan.requiredRevision.count)",
+                        tint: AamalTheme.gold,
+                        layout: .compact,
+                        showsIndicator: true
+                    )
+                    AamalStatPill(
+                        title: "الحالة",
+                        value: isCompleted ? "مكتمل" : "مستمر",
+                        tint: isCompleted ? AamalTheme.emerald : AamalTheme.gold,
+                        layout: .compact,
+                        showsIndicator: true
+                    )
+                }
+
+                if let first = plan.requiredRevision.first {
+                    Text("يبدأ اليوم بـ: \(first.rangeText)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } else if plan.guidance.contains("حدد مقدار المحفوظ") {
+                Text("لم يتم ضبط خطة المراجعة بعد.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            } else {
+                Text("لا يوجد مراجعة مطلوبة اليوم.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Button(action: onTap) {
+                Label("فتح المراجعة", systemImage: "arrow.up.left.square")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(AamalSecondaryButtonStyle())
+            .controlSize(.small)
+        }
+        .aamalCard()
+    }
+}
+
+private struct HomeQiyamStatusCard: View {
+    @ObservedObject var store: TaskStore
+    let onTap: () -> Void
+
+    private var session: QiyamSession? {
+        store.todaysQiyamSession
+    }
+
+    private var streak: Int {
+        store.quranRevisionPlan.qiyamStreak
+    }
+
+    private var rank: QuranQiyamRank? {
+        QuranQiyamRank.rank(for: session?.ayatCount ?? 0)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: AamalTheme.contentSpacing) {
+            HStack {
+                AamalSectionHeader(
+                    title: "قيام الليل",
+                    subtitle: session == nil ? "لم يُسجل قيام الليل اليوم" : "تم تسجيل \(session!.ayatCount) آية",
+                    tint: AamalTheme.gold,
+                    systemImage: "moon.stars.fill"
+                )
+                Spacer()
+                Image(systemName: "chevron.left")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            HStack(spacing: 10) {
+                AamalStatPill(
+                    title: "السلسلة",
+                    value: "\(streak) أيام",
+                    tint: AamalTheme.gold,
+                    layout: .compact,
+                    showsIndicator: true
+                )
+                if let rank {
+                    AamalStatPill(
+                        title: "المرتبة",
+                        value: rank.title,
+                        tint: AamalTheme.emerald,
+                        layout: .compact,
+                        showsIndicator: true
+                    )
+                } else {
+                    AamalStatPill(
+                        title: "المرتبة",
+                        value: "—",
+                        tint: .secondary,
+                        layout: .compact,
+                        showsIndicator: false
+                    )
+                }
+            }
+
+            if let session, let range = session.rangeSummary {
+                Text("المدى: \(range)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Button(action: onTap) {
+                Label("فتح قيام الليل", systemImage: "arrow.up.left.square")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(AamalSecondaryButtonStyle())
+            .controlSize(.small)
+        }
+        .aamalCard()
     }
 }

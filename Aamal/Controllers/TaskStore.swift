@@ -699,6 +699,65 @@ final class TaskStore: ObservableObject {
         return didRemove
     }
 
+    func setQiyamEnabled(_ enabled: Bool) {
+        guard quranRevisionPlan.qiyamEnabled != enabled else { return }
+        quranRevisionPlan.qiyamEnabled = enabled
+        saveData()
+    }
+
+    // MARK: - Manual Revision Sessions
+
+    func manualRevisionSessions(on date: Date = Date()) -> [ManualRevisionSession] {
+        let dayKey = dateKey(date)
+        return quranRevisionPlan.manualRevisionSessions.filter { $0.date == dayKey }
+    }
+
+    var todaysManualRevisionSessions: [ManualRevisionSession] {
+        manualRevisionSessions(on: Date())
+    }
+
+    var todaysManualRevisionAyatCount: Int {
+        todaysManualRevisionSessions.reduce(0) { $0 + $1.ayatCount }
+    }
+
+    @discardableResult
+    func logManualRevisionSession(
+        from startAyah: QuranAyahReference,
+        to endAyah: QuranAyahReference,
+        context: ManualRevisionSession.ManualRevisionContext,
+        on date: Date = Date()
+    ) -> Bool {
+        guard let ayatCount = QuranAyahCatalog.ayahCount(from: startAyah, to: endAyah),
+              ayatCount > 0 else {
+            return false
+        }
+
+        let dayKey = dateKey(date)
+        let session = ManualRevisionSession(
+            id: UUID(),
+            date: dayKey,
+            startAyah: startAyah,
+            endAyah: endAyah,
+            ayatCount: ayatCount,
+            context: context
+        )
+        quranRevisionPlan.manualRevisionSessions.append(session)
+        quranRevisionPlan.normalize()
+        saveData()
+        return true
+    }
+
+    @discardableResult
+    func removeManualRevisionSession(id: UUID) -> Bool {
+        let previousCount = quranRevisionPlan.manualRevisionSessions.count
+        quranRevisionPlan.manualRevisionSessions.removeAll { $0.id == id }
+        let didRemove = quranRevisionPlan.manualRevisionSessions.count != previousCount
+        if didRemove {
+            saveData()
+        }
+        return didRemove
+    }
+
     private func previousQiyamStopPoint(before date: Date) -> QuranAyahReference? {
         let dayKey = dateKey(date)
         return quranRevisionPlan.qiyamSessions
@@ -706,6 +765,102 @@ final class TaskStore: ObservableObject {
             .sorted { $0.date < $1.date }
             .last?
             .endAyah
+    }
+
+    // MARK: - Ayah-Level Revision Tracking
+
+    func ayahCoverage(for rub: QuranRubReference) -> QuranRubAyahCoverage {
+        let rubIndex = rub.globalRubIndex
+        let records = quranRevisionPlan.ayahRevisionRecords.filter { $0.rubIndex == rubIndex }
+        let uniqueAyahs = Set(records.map(\.ayahGlobalIndex))
+        let totalAyahs = estimatedAyahsForRub(rubIndex)
+        let coverageFraction = totalAyahs > 0 ? Double(uniqueAyahs.count) / Double(totalAyahs) : 0
+        let lastDate = records.map(\.date).max()
+
+        return QuranRubAyahCoverage(
+            rub: rub,
+            totalAyahs: totalAyahs,
+            revisedAyahs: uniqueAyahs.count,
+            coverageFraction: coverageFraction,
+            lastRevisedDate: lastDate,
+            ayahRecords: records.sorted { $0.date > $1.date }
+        )
+    }
+
+    func ayahCoverageBatch(for rubs: [QuranRubReference]) -> [QuranRubAyahCoverage] {
+        rubs.map { ayahCoverage(for: $0) }
+    }
+
+    func recordAyahRevisions(
+        from startAyah: QuranAyahReference,
+        to endAyah: QuranAyahReference,
+        rubIndex: Int,
+        source: QuranAyahRevisionRecord.RevisionSource,
+        on date: Date = Date()
+    ) {
+        guard let startGlobal = QuranAyahCatalog.globalAyahIndex(for: startAyah),
+              let endGlobal = QuranAyahCatalog.globalAyahIndex(for: endAyah),
+              endGlobal >= startGlobal else { return }
+
+        let dayKey = dateKey(date)
+        let newRecords = (startGlobal...endGlobal).map { globalIndex in
+            QuranAyahRevisionRecord(
+                id: UUID(),
+                rubIndex: rubIndex,
+                ayahGlobalIndex: globalIndex,
+                date: dayKey,
+                source: source
+            )
+        }
+
+        quranRevisionPlan.ayahRevisionRecords.append(contentsOf: newRecords)
+        quranRevisionPlan.normalize()
+    }
+
+    func recordAyahRevisionsForSession(
+        from startAyah: QuranAyahReference,
+        to endAyah: QuranAyahReference,
+        source: QuranAyahRevisionRecord.RevisionSource,
+        on date: Date = Date()
+    ) {
+        guard let startGlobal = QuranAyahCatalog.globalAyahIndex(for: startAyah),
+              let endGlobal = QuranAyahCatalog.globalAyahIndex(for: endAyah),
+              endGlobal >= startGlobal else { return }
+
+        let dayKey = dateKey(date)
+        var newRecords: [QuranAyahRevisionRecord] = []
+
+        for globalIndex in startGlobal...endGlobal {
+            guard let ref = QuranAyahCatalog.referenceForGlobalAyahIndex(globalIndex) else { continue }
+            let rubIndex = rubIndexContaining(ayah: ref)
+            newRecords.append(QuranAyahRevisionRecord(
+                id: UUID(),
+                rubIndex: rubIndex,
+                ayahGlobalIndex: globalIndex,
+                date: dayKey,
+                source: source
+            ))
+        }
+
+        quranRevisionPlan.ayahRevisionRecords.append(contentsOf: newRecords)
+        quranRevisionPlan.normalize()
+    }
+
+    private func rubIndexContaining(ayah: QuranAyahReference) -> Int {
+        guard let page = QuranAyahCatalog.estimatedPage(for: ayah) else { return 1 }
+        for rubIndex in 1...240 {
+            guard let metadata = QuranRubReference(globalRubIndex: rubIndex).metadata else { continue }
+            if page >= metadata.startPage && page <= metadata.endPage {
+                return rubIndex
+            }
+        }
+        return 1
+    }
+
+    private func estimatedAyahsForRub(_ rubIndex: Int) -> Int {
+        guard let metadata = QuranRubReference(globalRubIndex: rubIndex).metadata else { return 20 }
+        let pages = metadata.pageCount
+        return pages * 8
     }
 
         private struct QuranRubStrengthComputation {
@@ -881,7 +1036,7 @@ final class TaskStore: ObservableObject {
             guard totalRubs > 0 else { return [] }
 
             let dayKey = dateKey(date)
-            let completedCycleCount = quranRevisionPlan.completedDates.filter { $0 < dayKey }.count
+            let completedCycleCount = quranRevisionPlan.completedDates.filter { $0 <= dayKey }.count
             let completedCycleOffset = completedCycleCount * quranRevisionPlan.dailyGoalRubs
             let startIndex = completedCycleOffset % totalRubs
 
@@ -1095,6 +1250,34 @@ final class TaskStore: ObservableObject {
         let completedPrayers = quranRevisionPlan.completedPrayers(on: dayKey)
         if !activePrayers.isEmpty, activePrayers.isSubset(of: completedPrayers) {
             _ = markQuranRevisionCompleted(on: dayKey)
+        }
+
+        saveData()
+        return true
+    }
+
+    @discardableResult
+    func unmarkQuranPrayerCompleted(_ prayer: PrayerCompensationType, on date: Date = Date()) -> Bool {
+        guard quranRevisionPlan.totalMemorizedRubs > 0 else { return false }
+        let dayKey = dateKey(date)
+
+        var logs = quranRevisionPlan.prayerCompletionLogs
+        guard let index = logs.firstIndex(where: { $0.date == dayKey }) else { return false }
+
+        var prayers = Set(logs[index].prayerRawValues)
+        guard prayers.contains(prayer.rawValue) else { return false }
+        prayers.remove(prayer.rawValue)
+
+        if prayers.isEmpty {
+            logs.remove(at: index)
+        } else {
+            logs[index].prayerRawValues = prayers.sorted()
+        }
+
+        quranRevisionPlan.prayerCompletionLogs = logs
+
+        if quranRevisionPlan.completedDates.contains(dayKey) {
+            quranRevisionPlan.completedDates.removeAll { $0 == dayKey }
         }
 
         saveData()
@@ -2181,6 +2364,29 @@ final class TaskStore: ObservableObject {
         }
     }
 
+    func quranCompletionSeries(days: Int) -> [ProgressPoint] {
+        guard days > 0 else { return [] }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+
+        return (0..<days).compactMap { offset in
+            guard let date = calendar.date(byAdding: .day, value: -(days - 1 - offset), to: today) else {
+                return nil
+            }
+            let dayKey = dateKey(date)
+            let isCompleted = quranRevisionPlan.completedDates.contains(dayKey)
+            let activePrayers = adaptiveQuranPlan(for: dayKey)
+                .prayerAssignments
+                .filter { $0.capacityAyahs > 0 }
+            let totalActive = activePrayers.count
+            let completedCount = activePrayers.filter { assignment in
+                quranRevisionPlan.completedPrayers(on: dayKey).contains(assignment.prayer)
+            }.count
+            let value = totalActive > 0 ? Double(completedCount) / Double(totalActive) : (isCompleted ? 1.0 : 0.0)
+            return ProgressPoint(date: date, value: value)
+        }
+    }
+
     func mostMissedTasks(days: Int, limit: Int = 5) -> [TaskMissInsight] {
         let windowDates = lastNDates(days: days)
         guard !windowDates.isEmpty else { return [] }
@@ -2826,14 +3032,18 @@ final class TaskStore: ObservableObject {
     }
 
     private func scheduleNotification(id: String, title: String, body: String, date: Date) {
-        guard date > Date() else { return }
+        var targetDate = date
+        if targetDate <= Date() {
+            guard let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: targetDate) else { return }
+            targetDate = tomorrow
+        }
 
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
         content.sound = .default
 
-        let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+        let components = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: targetDate)
         let trigger = UNCalendarNotificationTrigger(dateMatching: components, repeats: false)
         let request = UNNotificationRequest(identifier: id, content: content, trigger: trigger)
 
@@ -3142,13 +3352,16 @@ final class TaskStore: ObservableObject {
     }
 
     private func removeLegacyRamadanData() {
+        let key = "legacyRamadanDataRemoved_v1"
+        guard !userDefaults.bool(forKey: key) else { return }
         userDefaults.removeObject(forKey: "ramadanHabitLog")
         UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ["ramadan_suhoor", "ramadan_iftar"])
+        userDefaults.set(true, forKey: key)
     }
 
     private func pruneCompletedLog() {
-        let validTaskIDs = Set(allTasks.map(\.id))
-        completedLog = completedLog.filter { validTaskIDs.contains($0.key) }
+        // Keep all completion history to preserve streak data
+        // Do not prune entries for deleted tasks
     }
 
 

@@ -158,6 +158,34 @@ public enum QuranAyahCatalog {
         let rawPage = Int(ceil(position * Double(totalMushafPages)))
         return min(max(1, rawPage), totalMushafPages)
     }
+
+    static func referenceForPage(_ page: Int) -> QuranAyahReference? {
+        guard (1...totalMushafPages).contains(page) else { return nil }
+        let targetPosition = Double(page) / Double(totalMushafPages)
+        let targetAyah = Int(ceil(targetPosition * Double(totalAyahCount)))
+        var accumulated = 0
+        for surah in surahs {
+            if accumulated + surah.ayahCount >= targetAyah {
+                let ayah = targetAyah - accumulated
+                return QuranAyahReference(surahIndex: surah.index, ayah: max(1, min(ayah, surah.ayahCount)))
+            }
+            accumulated += surah.ayahCount
+        }
+        return QuranAyahReference(surahIndex: 114, ayah: 6)
+    }
+
+    static func referenceForGlobalAyahIndex(_ globalIndex: Int) -> QuranAyahReference? {
+        guard globalIndex > 0 else { return nil }
+        var accumulated = 0
+        for surah in surahs {
+            if accumulated + surah.ayahCount >= globalIndex {
+                let ayah = globalIndex - accumulated
+                return QuranAyahReference(surahIndex: surah.index, ayah: max(1, min(ayah, surah.ayahCount)))
+            }
+            accumulated += surah.ayahCount
+        }
+        return nil
+    }
 }
 
 struct QiyamSession: Identifiable, Codable, Hashable {
@@ -376,6 +404,100 @@ struct QuranPrayerCompletionLog: Codable, Hashable, Identifiable {
     var id: Date { date }
 }
 
+struct ManualRevisionSession: Identifiable, Codable, Hashable {
+    let id: UUID
+    let date: Date
+    let startAyah: QuranAyahReference
+    let endAyah: QuranAyahReference
+    let ayatCount: Int
+    let context: ManualRevisionContext
+
+    enum ManualRevisionContext: String, Codable, Hashable, CaseIterable {
+        case qiyam
+        case prayer
+        case remainingDaily
+        case other
+
+        var title: String {
+            switch self {
+            case .qiyam: return "قيام الليل"
+            case .prayer: return "في صلاة"
+            case .remainingDaily: return "مراجعة يومية متبقية"
+            case .other: return "مراجعة حرة"
+            }
+        }
+    }
+}
+
+struct QuranAyahRevisionRecord: Codable, Hashable, Identifiable {
+    let id: UUID
+    let rubIndex: Int
+    let ayahGlobalIndex: Int
+    let date: Date
+    let source: RevisionSource
+
+    enum RevisionSource: String, Codable, Hashable {
+        case prayer
+        case qiyam
+        case manual
+        case dailyPlan
+
+        var title: String {
+            switch self {
+            case .prayer: return "صلاة"
+            case .qiyam: return "قيام"
+            case .manual: return "يدوي"
+            case .dailyPlan: return "خطة يومية"
+            }
+        }
+    }
+}
+
+struct QuranRubAyahCoverage: Hashable {
+    let rub: QuranRubReference
+    let totalAyahs: Int
+    let revisedAyahs: Int
+    let coverageFraction: Double
+    let lastRevisedDate: Date?
+    let ayahRecords: [QuranAyahRevisionRecord]
+
+    var coveragePercentage: Int {
+        Int((coverageFraction * 100).rounded())
+    }
+
+    var isFullyCovered: Bool {
+        coverageFraction >= 0.95
+    }
+
+    var status: CoverageStatus {
+        if isFullyCovered { return .complete }
+        if coverageFraction > 0 { return .partial }
+        return .none
+    }
+
+    enum CoverageStatus: Hashable {
+        case complete
+        case partial
+        case none
+
+        var title: String {
+            switch self {
+            case .complete: return "مكتمل"
+            case .partial: return "جزئي"
+            case .none: return "لم يُراجع"
+            }
+        }
+
+        var color: String {
+            switch self {
+            case .complete: return "emerald"
+            case .partial: return "amber"
+            case .none: return "slate"
+            }
+        }
+    }
+}
+
 struct QuranRevisionPlan: Codable {
     var totalMemorizedRubs: Int
     var dailyGoalRubs: Int
@@ -387,6 +509,8 @@ struct QuranRevisionPlan: Codable {
     var manualStrengthOverrides: [QuranRubStrengthOverride]
     var prayerCapacities: [String: Int]
     var prayerCompletionLogs: [QuranPrayerCompletionLog]
+    var manualRevisionSessions: [ManualRevisionSession]
+    var ayahRevisionRecords: [QuranAyahRevisionRecord]
     var startDate: Date
     var completedDates: [Date]
     var lastCompletionDate: Date?
@@ -403,6 +527,8 @@ struct QuranRevisionPlan: Codable {
         case manualStrengthOverrides
         case prayerCapacities
         case prayerCompletionLogs
+        case manualRevisionSessions
+        case ayahRevisionRecords
         case startDate
         case completedDates
         case lastCompletionDate
@@ -428,6 +554,8 @@ struct QuranRevisionPlan: Codable {
         manualStrengthOverrides: [QuranRubStrengthOverride] = [],
         prayerCapacities: [String: Int] = QuranRevisionPlan.defaultPrayerCapacities,
         prayerCompletionLogs: [QuranPrayerCompletionLog] = [],
+        manualRevisionSessions: [ManualRevisionSession] = [],
+        ayahRevisionRecords: [QuranAyahRevisionRecord] = [],
         startDate: Date = Date(),
         completedDates: [Date] = [],
         lastCompletionDate: Date? = nil,
@@ -443,6 +571,8 @@ struct QuranRevisionPlan: Codable {
         self.manualStrengthOverrides = manualStrengthOverrides
         self.prayerCapacities = prayerCapacities
         self.prayerCompletionLogs = prayerCompletionLogs
+        self.manualRevisionSessions = manualRevisionSessions
+        self.ayahRevisionRecords = ayahRevisionRecords
         self.startDate = startDate
         self.completedDates = completedDates
         self.lastCompletionDate = lastCompletionDate
@@ -464,6 +594,8 @@ struct QuranRevisionPlan: Codable {
         prayerCapacities = try container.decodeIfPresent([String: Int].self, forKey: .prayerCapacities)
             ?? Self.defaultPrayerCapacities
         prayerCompletionLogs = try container.decodeIfPresent([QuranPrayerCompletionLog].self, forKey: .prayerCompletionLogs) ?? []
+        manualRevisionSessions = try container.decodeIfPresent([ManualRevisionSession].self, forKey: .manualRevisionSessions) ?? []
+        ayahRevisionRecords = try container.decodeIfPresent([QuranAyahRevisionRecord].self, forKey: .ayahRevisionRecords) ?? []
         startDate = try container.decodeIfPresent(Date.self, forKey: .startDate) ?? Date()
         completedDates = try container.decodeIfPresent([Date].self, forKey: .completedDates) ?? []
         lastCompletionDate = try container.decodeIfPresent(Date.self, forKey: .lastCompletionDate)
@@ -483,6 +615,8 @@ struct QuranRevisionPlan: Codable {
         try container.encode(manualStrengthOverrides, forKey: .manualStrengthOverrides)
         try container.encode(prayerCapacities, forKey: .prayerCapacities)
         try container.encode(prayerCompletionLogs, forKey: .prayerCompletionLogs)
+        try container.encode(manualRevisionSessions, forKey: .manualRevisionSessions)
+        try container.encode(ayahRevisionRecords, forKey: .ayahRevisionRecords)
         try container.encode(startDate, forKey: .startDate)
         try container.encode(completedDates, forKey: .completedDates)
         try container.encodeIfPresent(lastCompletionDate, forKey: .lastCompletionDate)
@@ -499,6 +633,8 @@ struct QuranRevisionPlan: Codable {
         manualStrengthOverrides = Self.normalizedStrengthOverrides(from: manualStrengthOverrides, totalMemorizedRubs: totalMemorizedRubs)
         prayerCapacities = Self.normalizedPrayerCapacities(from: prayerCapacities)
         prayerCompletionLogs = Self.normalizedPrayerCompletionLogs(from: prayerCompletionLogs)
+        manualRevisionSessions = Self.normalizedManualRevisionSessions(from: manualRevisionSessions)
+        ayahRevisionRecords = Self.normalizedAyahRevisionRecords(from: ayahRevisionRecords)
         completedDates = Array(Set(completedDates.map { Calendar.current.startOfDay(for: $0) })).sorted()
         if let lastCompletionDate {
             self.lastCompletionDate = Calendar.current.startOfDay(for: lastCompletionDate)
@@ -515,6 +651,62 @@ struct QuranRevisionPlan: Codable {
         PrayerCompensationType.allCases.reduce(0) { partial, prayer in
             partial + capacity(for: prayer)
         }
+    }
+
+    var qiyamStreak: Int {
+        let calendar = Calendar.current
+        let qualifyingDates = qiyamSessions
+            .filter { $0.ayatCount >= 10 }
+            .map(\.date)
+            .sorted()
+
+        guard let latestQualifyingDate = qualifyingDates.last else { return 0 }
+
+        var graceMonthsUsed: Set<String> = []
+        var streak = 1
+        var current = latestQualifyingDate
+
+        for previous in qualifyingDates.dropLast().reversed() {
+            let gap = calendar.dateComponents([.day], from: previous, to: current).day ?? 0
+            if gap == 1 {
+                streak += 1
+                current = previous
+                continue
+            }
+
+            if gap == 2,
+               let missedDay = calendar.date(byAdding: .day, value: 1, to: previous) {
+                let monthKey = qiyamGraceMonthKey(for: missedDay)
+                if !graceMonthsUsed.contains(monthKey) {
+                    graceMonthsUsed.insert(monthKey)
+                    streak += 1
+                    current = previous
+                    continue
+                }
+            }
+
+            break
+        }
+
+        let today = calendar.startOfDay(for: Date())
+        let gapToToday = calendar.dateComponents([.day], from: latestQualifyingDate, to: today).day ?? 0
+        if gapToToday > 1 {
+            if gapToToday == 2,
+               let missedDay = calendar.date(byAdding: .day, value: 1, to: latestQualifyingDate) {
+                let monthKey = qiyamGraceMonthKey(for: missedDay)
+                if !graceMonthsUsed.contains(monthKey) {
+                    return streak
+                }
+            }
+            return 0
+        }
+
+        return streak
+    }
+
+    private func qiyamGraceMonthKey(for date: Date) -> String {
+        let components = Calendar.current.dateComponents([.year, .month], from: date)
+        return "\(components.year ?? 0)-\(components.month ?? 0)"
     }
 
     func qiyamSession(on date: Date) -> QiyamSession? {
@@ -618,6 +810,33 @@ struct QuranRevisionPlan: Codable {
 
         return grouped.keys.sorted().map { date in
             QuranPrayerCompletionLog(date: date, prayerRawValues: grouped[date, default: []].sorted())
+        }
+    }
+
+    private static func normalizedManualRevisionSessions(from values: [ManualRevisionSession]) -> [ManualRevisionSession] {
+        var grouped: [Date: [ManualRevisionSession]] = [:]
+        for session in values {
+            let dayKey = Calendar.current.startOfDay(for: session.date)
+            grouped[dayKey, default: []].append(session)
+        }
+        return grouped.keys.sorted().flatMap { grouped[$0, default: []] }
+    }
+
+    private static func normalizedAyahRevisionRecords(from values: [QuranAyahRevisionRecord]) -> [QuranAyahRevisionRecord] {
+        let calendar = Calendar.current
+        var seen: Set<String> = []
+        return values.compactMap { record in
+            let dayKey = calendar.startOfDay(for: record.date)
+            let key = "\(record.rubIndex)-\(record.ayahGlobalIndex)-\(dayKey.timeIntervalSince1970)"
+            guard !seen.contains(key) else { return nil }
+            seen.insert(key)
+            return QuranAyahRevisionRecord(
+                id: record.id,
+                rubIndex: record.rubIndex,
+                ayahGlobalIndex: record.ayahGlobalIndex,
+                date: dayKey,
+                source: record.source
+            )
         }
     }
 }
